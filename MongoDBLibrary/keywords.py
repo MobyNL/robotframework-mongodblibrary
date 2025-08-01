@@ -45,7 +45,6 @@ class MongoDBKeywords:
         | Connect To Database    db_name=mydb    db_user=user    db_password=pass    db_host=localhost    db_port=27017
 
         """
-        logger.info(f"Test alias: {alias}", also_console=True)
         if alias is None:
             alias = self.default_alias
         try:
@@ -99,8 +98,6 @@ class MongoDBKeywords:
         """
         if alias is None:
             alias = self.default_alias
-        logger.info(f"Disconnecting from database with alias: {alias}", also_console=True)
-        logger.info(f"Current connection pool: {self.connection_manager.db_connection_pool}", also_console=True)
         if alias not in self.connection_manager.db_connection_pool:
             logger.error(f"Attempted to disconnect non-existent alias: {alias}")
             raise ValueError(f"Connection with alias '{alias}' is not connected.")
@@ -266,14 +263,14 @@ class MongoDBKeywords:
         return list(collection.aggregate(pipeline))
 
     @keyword
-    def count_documents(self, collection_name: str, query: dict, alias: Optional[str] = None) -> int:
+    def count_documents(self, collection_name: str, alias: Optional[str] = None,  **params) -> int:
         """
         Count the number of documents in a collection matching a query.
 
         Arguments:
         - ``collection_name``: Name of the collection.
-        - ``query``: Query to count matching documents.
         - ``alias``: Alias of the connection (optional, defaults to default_alias).
+        - ``params``: key-value pairs to count matching documents.
 
         Returns:
         - The count of matching documents.
@@ -286,7 +283,7 @@ class MongoDBKeywords:
             alias = self.default_alias
         db = self.connection_manager.db_connection_pool[alias]
         collection = db[collection_name]
-        return collection.count_documents(query)
+        return collection.count_documents(params)
 
     @keyword
     def delete_all_documents_from_collection(self, collection_name: str, alias: Optional[str] = None) -> int:

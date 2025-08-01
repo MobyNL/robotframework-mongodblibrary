@@ -69,6 +69,10 @@ configure = [
     "too-many-arguments.max_args=10",
 ]
 
+[tool.robot]
+log-level = "DEBUG"
+extend-python-path = ["./atest/resources"]
+
 [tool.robocop.format]
 select = [
     "AddMissingEnd",

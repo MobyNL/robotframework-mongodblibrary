@@ -244,7 +244,7 @@ def test_count_documents(mongo_keywords, mocker):
     mock_collection.count_documents.return_value = 5
 
     result = mongo_keywords.count_documents(
-        alias="test_alias", collection_name="test_collection", query={"key": "value"}
+        alias="test_alias", collection_name="test_collection", key="value"
     )
 
     assert result == 5
