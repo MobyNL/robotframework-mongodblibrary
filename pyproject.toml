@@ -15,8 +15,10 @@ python = ">=3.12,<3.14"
 robotframework = "^7.3.2"
 robotframework-pythonlibcore = "^4.4.1"
 pymongo = "^4.13.2"
-pymongo-auth-aws = {version = "^1.3.0", optional = true}
 robotframework-assertion-engine = "^3.0.3"
+pymongo-auth-aws = {version = "^1.3.0", optional = true}
+robotstatuschecker = "^4.1.1"
+robotframework-robocop = "^6.5.1"
 
 
 [tool.poetry.extras]
@@ -55,3 +57,92 @@ extend_skip = ["__init__.py", "src/robot/api/parsing.py"]
 combine_as_imports = true
 order_by_type = false
 line_length = 140
+
+
+[tool.robocop.lint]
+ignore = [
+    "missing-doc-test-case",
+    "missing-doc-suite",
+]
+configure = [
+    "line-too-long.line_length=140",
+    "too-many-arguments.max_args=10",
+]
+
+[tool.robocop.format]
+select = [
+    "AddMissingEnd",
+    "AlignKeywordsSection",
+    "AlignSettingsSection",
+    "AlignTemplatedTestCases",
+    "AlignTestCasesSection",
+    "AlignVariablesSection",
+    "DiscardEmptySections",
+    "IndentNestedKeywords",
+    "InlineIf",
+    "MergeAndOrderSections",
+    "NormalizeAssignments",
+    "NormalizeComments",
+    "NormalizeNewLines",
+    "NormalizeSectionHeaderName",
+    "NormalizeSeparators",
+    "NormalizeSettingName",
+    "NormalizeTags",
+    "OrderSettings",
+    "OrderSettingsSection",
+    "OrderTags",
+    "RemoveEmptySettings",
+    "RenameKeywords",
+    "RenameTestCases",
+    "RenameVariables",
+    "ReplaceBreakContinue",
+    "ReplaceEmptyValues",
+    "ReplaceReturns",
+    "ReplaceRunKeywordIf",
+    "ReplaceWithVAR",
+    "SmartSortKeywords",
+    "SplitTooLongLine",
+]
+configure = [
+    "AddMissingEnd.enabled=True",
+    "AlignKeywordsSection.enabled=True",
+    "AlignKeywordsSection.alignment_type=auto",
+    "AlignSettingsSection.enabled=True",
+    "AlignTemplatedTestCases.enabled=True",
+    "AlignTestCasesSection.enabled=True",
+    "AlignTestCasesSection.alignment_type=auto",
+    "AlignVariablesSection.enabled=True",
+    "DiscardEmptySections.enabled=True",
+    "IndentNestedKeywords.enabled=True",
+    "InlineIf.enabled=True",
+    "MergeAndOrderSections.enabled=True",
+    "NormalizeAssignments.enabled=True",
+    "NormalizeAssignments.equal_sign_type_variables=remove",
+    "NormalizeAssignments.equal_sign_type=remove",
+    "NormalizeComments.enabled=True",
+    "NormalizeNewLines.enabled=True",
+    "NormalizeSectionHeaderName.enabled=True",
+    "NormalizeSeparators.enabled=True",
+    "NormalizeSettingName.enabled=True",
+    "NormalizeTags.enabled=True",
+    "OrderSettings.enabled=True",
+    "OrderSettingsSection.enabled=True",
+    "OrderSettingsSection.imports_order=library,resource,variables",
+    "OrderTags.enabled=True",
+    "RemoveEmptySettings.enabled=True",
+    "RenameKeywords.enabled=True",
+    "RenameTestCases.enabled=True",
+    "RenameTestCases.capitalize_each_word=True",
+    "RenameVariables.enabled=True",
+    "RenameVariables.settings_section_case=upper",
+    "RenameVariables.variables_section_case=upper",
+    "RenameVariables.unknown_variables_case=upper",
+    "ReplaceBreakContinue.enabled=True",
+    "ReplaceEmptyValues.enabled=True",
+    "ReplaceReturns.enabled=True",
+    "ReplaceRunKeywordIf.enabled=True",
+    "ReplaceWithVAR.enabled=True",
+    "SmartSortKeywords.enabled=True",
+    "SplitTooLongLine.enabled=True",
+    "SplitTooLongLine.line_length=140",
+]

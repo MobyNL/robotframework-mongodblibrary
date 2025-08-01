@@ -58,10 +58,10 @@ class ConnectionManager:
         try:
             database = self.db_connection_pool.pop(alias)
             logger.debug(f"Attempting to close database for alias '{alias}'")
-            database.close()
+            database.client.close()
             logger.info(f"Removed connection with alias '{alias}' from the connection pool.")
         except KeyError:
-            logger.error(f"Connection with alias '{alias}' not found in the connection pool.")
+            raise KeyError(f"Alias '{alias}' not found in the connection pool.")
 
     def clear_connection_pool(self) -> None:
         """

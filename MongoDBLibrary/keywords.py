@@ -45,6 +45,7 @@ class MongoDBKeywords:
         | Connect To Database    db_name=mydb    db_user=user    db_password=pass    db_host=localhost    db_port=27017
 
         """
+        logger.info(f"Test alias: {alias}", also_console=True)
         if alias is None:
             alias = self.default_alias
         try:
@@ -54,10 +55,11 @@ class MongoDBKeywords:
                 username=db_user,
                 password=db_password
             )[db_name]
-            self.connection_manager.add_to_connection_pool(database, alias)
+            self.connection_manager.add_to_connection_pool(database, db_name, alias)
             logger.info(f"Connected to MongoDB with alias '{alias}' at {db_host}:{db_port}")
         except Exception as e:
             logger.error(f"Failed to connect to MongoDB: {e}")
+            raise
 
     @keyword
     def connect_to_database_using_connection_string(self, db_conn_string: str, db_name: str, alias: Optional[str] = None) -> None:
@@ -97,7 +99,13 @@ class MongoDBKeywords:
         """
         if alias is None:
             alias = self.default_alias
+        logger.info(f"Disconnecting from database with alias: {alias}", also_console=True)
+        logger.info(f"Current connection pool: {self.connection_manager.db_connection_pool}", also_console=True)
+        if alias not in self.connection_manager.db_connection_pool:
+            logger.error(f"Attempted to disconnect non-existent alias: {alias}")
+            raise ValueError(f"Connection with alias '{alias}' is not connected.")
         self.connection_manager.remove_from_connection_pool(alias)
+        logger.info(f"Disconnected alias: {alias}")
 
     @keyword
     def insert_document(self, collection_name: str, document: dict, alias: Optional[str] = None) -> str:
@@ -118,6 +126,8 @@ class MongoDBKeywords:
         """
         if alias is None:
             alias = self.default_alias
+        if alias not in self.connection_manager.db_connection_pool:
+            raise KeyError(f"Alias '{alias}' not found in connection pool.")
         db = self.connection_manager.db_connection_pool[alias]
         collection = db[collection_name]
         return collection.insert_one(document).inserted_id
@@ -144,7 +154,10 @@ class MongoDBKeywords:
         db = self.connection_manager.db_connection_pool[alias]
         collection = db[collection_name]
 
-        return DotDict(collection.find_one(params))
+        result = collection.find_one(params)
+        if result is not None:
+            return DotDict(result)
+        return None
 
     @keyword
     def update_document(self, collection_name: str, query: dict, update: dict, alias: Optional[str] = None) -> Optional[dict]:
@@ -166,6 +179,8 @@ class MongoDBKeywords:
         """
         if alias is None:
             alias = self.default_alias
+        if alias not in self.connection_manager.db_connection_pool:
+            raise KeyError(f"Alias '{alias}' not found in connection pool.")
         db = self.connection_manager.db_connection_pool[alias]
         collection = db[collection_name]
         return collection.find_one_and_update(query, {'$set': update}, return_document=ReturnDocument.AFTER)
@@ -189,6 +204,8 @@ class MongoDBKeywords:
         """
         if alias is None:
             alias = self.default_alias
+        if alias not in self.connection_manager.db_connection_pool:
+            raise KeyError(f"Alias '{alias}' not found in connection pool.")
         db = self.connection_manager.db_connection_pool[alias]
         collection = db[collection_name]
         return collection.delete_one(params).deleted_count
@@ -212,6 +229,8 @@ class MongoDBKeywords:
         """
         if alias is None:
             alias = self.default_alias
+        if alias not in self.connection_manager.db_connection_pool:
+            raise KeyError(f"Alias '{alias}' not found in connection pool.")
         db = self.connection_manager.db_connection_pool[alias]
         collection = db[collection_name]
         return collection.delete_many(params).deleted_count
@@ -235,6 +254,13 @@ class MongoDBKeywords:
         """
         if alias is None:
             alias = self.default_alias
+
+        if not isinstance(pipeline, list):
+            raise Exception("Invalid pipeline: must be a list of stages.")
+
+        if alias not in self.connection_manager.db_connection_pool:
+            raise KeyError(f"Alias '{alias}' not found in connection pool.")
+
         db = self.connection_manager.db_connection_pool[alias]
         collection = db[collection_name]
         return list(collection.aggregate(pipeline))
@@ -280,6 +306,8 @@ class MongoDBKeywords:
         """
         if alias is None:
             alias = self.default_alias
+        if alias not in self.connection_manager.db_connection_pool:
+            raise KeyError(f"Alias '{alias}' not found in connection pool.")
         db = self.connection_manager.db_connection_pool[alias]
         collection = db[collection_name]
         result = collection.delete_many({})
@@ -335,10 +363,14 @@ class MongoDBKeywords:
         if alias is None:
             alias = self.default_alias
 
+        if alias not in self.connection_manager.db_connection_pool:
+            logger.error(f"Alias '{alias}' not found in connection pool.")
+            raise KeyError(f"Alias '{alias}' not found in connection pool.")
+
         check_ok = False
         time_counter = 0
 
-        db = self.connection_manager.db_connection_pool[self.connection_manager.default_alias]
+        db = self.connection_manager.db_connection_pool[alias]
         collection = db[collection_name]
 
         while not check_ok:
@@ -400,10 +432,14 @@ class MongoDBKeywords:
         if alias is None:
             alias = self.default_alias
 
+        if alias not in self.connection_manager.db_connection_pool:
+            logger.error(f"Alias '{alias}' not found in connection pool.")
+            raise KeyError(f"Alias '{alias}' not found in connection pool.")
+
         check_ok = False
         time_counter = 0
 
-        db = self.connection_manager.db_connection_pool[self.connection_manager.default_alias]
+        db = self.connection_manager.db_connection_pool[alias]
         collection = db[collection_name]
 
         while not check_ok:

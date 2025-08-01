@@ -52,6 +52,7 @@ report.html
 # Local environment
 .env
 .env.*
+local.resource
 
 # IDEs
 .idea/
