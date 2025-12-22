@@ -130,7 +130,7 @@ class MongoDBKeywords:
         return collection.insert_one(document).inserted_id
 
     @keyword
-    def find_document(self, collection_name: str, alias: Optional[str] = None, **params: str) -> Optional[dict]:
+    def find_document(self, collection_name: str, alias: Optional[str] = None, **params: Any) -> Optional[dict]:
         """
         Find a single document in a collection.
 
@@ -152,9 +152,7 @@ class MongoDBKeywords:
         collection = db[collection_name]
 
         result = collection.find_one(params)
-        if result is not None:
-            return DotDict(result)
-        return None
+        return DotDict(result) if result is not None else None
 
     @keyword
     def update_document(self, collection_name: str, query: dict, update: dict, alias: Optional[str] = None) -> Optional[dict]:
@@ -181,6 +179,33 @@ class MongoDBKeywords:
         db = self.connection_manager.db_connection_pool[alias]
         collection = db[collection_name]
         return collection.find_one_and_update(query, {'$set': update}, return_document=ReturnDocument.AFTER)
+
+    @keyword
+    def update_document_with_operators(self, collection_name: str, query: dict, update: dict, alias: Optional[str] = None) -> Optional[dict]:
+        """
+        Update a single document in a collection using raw MongoDB update operators.
+
+        This keyword allows you to use MongoDB update operators like $set, $push, $pull, etc.
+        directly without automatic wrapping. Use this when you need operations other than $set.
+
+        Arguments:
+        - ``collection_name``: Name of the collection.
+        - ``query``: Query to find the document to update.
+        - ``update``: Raw MongoDB update document with operators (e.g., {"$push": {...}, "$set": {...}}).
+        - ``alias``: Alias of the connection (optional, defaults to default_alias).
+
+        Returns:
+        - Updated document as a dictionary, or None if no document matches.
+
+        Example:
+        | ${updated_doc}    Update Document With Operators    collection_name=mycollection    query={"key": "value"}    update={"$push": {"items": "new_item"}, "$set": {"modified": "2025-01-01"}}
+
+        """
+        if alias is None:
+            alias = self.default_alias
+        db = self.connection_manager.db_connection_pool[alias]
+        collection = db[collection_name]
+        return collection.find_one_and_update(query, update, return_document=ReturnDocument.AFTER)
 
     @keyword
     def delete_document(self, collection_name: str, alias: Optional[str] = None, **params: str) -> int:
@@ -231,6 +256,37 @@ class MongoDBKeywords:
         db = self.connection_manager.db_connection_pool[alias]
         collection = db[collection_name]
         return collection.delete_many(params).deleted_count
+
+    @keyword
+    def delete_documents_with_query(self, collection_name: str, query: dict, alias: Optional[str] = None) -> int:
+        """
+        Delete multiple documents from a collection using a complex MongoDB query.
+
+        This keyword allows you to use MongoDB query operators like $gte, $lt, $in, $regex, etc.
+        directly without limitations. Use this when you need operations beyond simple key=value matching.
+
+        Arguments:
+        - ``collection_name``: Name of the collection.
+        - ``query``: MongoDB query document with operators (e.g., {"date": {"$gte": start, "$lt": end}}).
+        - ``alias``: Alias of the connection (optional, defaults to default_alias).
+
+        Returns:
+        - Count of deleted documents.
+
+        Example:
+        | ${start_date}    Get Current Date    result_format=datetime
+        | ${end_date}      Evaluate    $start_date + timedelta(days=1)    modules=datetime
+        | ${query}         Create Dictionary    userId=user123
+        | ${date_range}    Create Dictionary    $gte=${start_date}    $lt=${end_date}
+        | Set To Dictionary    ${query}    date=${date_range}
+        | ${deleted_count}    Delete Documents With Query    collection_name=activity    query=${query}
+
+        """
+        if alias is None:
+            alias = self.default_alias
+        db = self.connection_manager.db_connection_pool[alias]
+        collection = db[collection_name]
+        return collection.delete_many(query).deleted_count
 
     @keyword
     def execute_query(self, collection_name: str, pipeline: list, alias: Optional[str] = None) -> list:
@@ -456,3 +512,23 @@ class MongoDBKeywords:
                     raise e
                 BuiltIn().sleep(retry_pause)
                 time_counter += timestr_to_secs(retry_pause)
+
+    @keyword
+    def check_if_database_connection_exists(self, alias: Optional[str] = None) -> None:
+        """
+        Check if a database connection exists for the given alias.
+
+        Arguments:
+        - ``alias``: Alias of the connection to check (optional, defaults to default_alias).
+
+        Raises:
+        - ValueError: If the connection does not exist.
+
+        Example:
+        | Check If Database Connection Exists    alias=myalias
+
+        """
+        if alias is None:
+            alias = self.default_alias
+        if alias not in self.connection_manager.db_connection_pool:
+            raise ValueError(f"No database connection exists for alias '{alias}'.")
