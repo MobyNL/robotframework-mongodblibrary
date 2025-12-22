@@ -1,9 +1,19 @@
 [tool.poetry]
-name = "robotframework-mongodblibrary"
-version = "0.1.0"
-description = ""
+name = "robotframework-mongodb"
+version = "0.2.0"
+description = "MongoDB test library for Robot Framework."
 authors = ["MobyNl <markmoberts@gmail.com>"]
 readme = "README.md"
+license = "MIT"
+repository = "https://github.com/MobyNl/robotframework-mongodblibrary"
+homepage = "https://github.com/MobyNl/robotframework-mongodblibrary"
+keywords = ["robotframework", "mongodb", "testing", "library"]
+classifiers = [
+    "Framework :: Robot Framework",
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent"
+]
 package-mode = true
 
 packages = [
