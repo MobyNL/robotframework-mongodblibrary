@@ -907,5 +907,5 @@ aws = ["pymongo-auth-aws"]
 
 [metadata]
 lock-version = "2.0"
-python-versions = ">=3.12,<3.14"
-content-hash = "7759405f5a60d861203582569cf5aeb3dea08addabfceb6c78ca9d6b8543d788"
+python-versions = ">=3.12,<3.15"
+content-hash = "2ca24809c96d9de00f97ef82f4dd713431bea554b208a97dd8263f0754f3428d"
