@@ -5,3 +5,6 @@ ${DB_PASSWORD}          ${EMPTY}
 ${DB_CONNECT_STRING}    ${EMPTY}
 ${DB_NAME}              ${EMPTY}
 ${DB_PORT}              ${EMPTY}
+# Set to ${True} for a hosted cluster such as MongoDB Atlas, whose cluster name is a
+# DNS seed list rather than a single host. Leave ${False} for a plain host and port.
+${DB_SRV}               ${False}
