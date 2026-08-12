@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint-and-unit-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - name: Install dependencies
+        run: poetry install
+
+      - name: Lint Python
+        run: poetry run ruff check .
+
+      - name: Lint Robot Framework
+        run: poetry run robocop check atest
+
+      - name: Type check
+        run: poetry run mypy
+
+      - name: Unit tests
+        run: poetry run pytest utest --cov=MongoDBLibrary --cov-report=term-missing
+
+  acceptance-test:
+    runs-on: ubuntu-latest
+    services:
+      mongodb:
+        image: mongo:8
+        ports:
+          - 27017:27017
+        env:
+          MONGO_INITDB_ROOT_USERNAME: root
+          MONGO_INITDB_ROOT_PASSWORD: testpass
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - name: Install dependencies
+        run: poetry install
+
+      - name: Write local.resource for the service container
+        run: |
+          cat > atest/local.resource <<'EOF'
+          *** Variables ***
+          ${DB_HOST}              localhost
+          ${DB_USER}              root
+          ${DB_PASSWORD}          testpass
+          ${DB_CONNECT_STRING}    mongodb://root:testpass@localhost:27017/?authSource=admin
+          ${DB_NAME}              rf_atest
+          ${DB_PORT}              27017
+          ${DB_SRV}               ${False}
+          EOF
+
+      - name: Acceptance tests
+        run: poetry run robot --outputdir atest-results atest
+
+      - name: Upload Robot Framework results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: atest-results
+          path: atest-results/
