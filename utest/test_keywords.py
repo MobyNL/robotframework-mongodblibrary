@@ -94,6 +94,232 @@ def test_connect_verifies_the_server_is_reachable(mongo_keywords, mocker, keywor
     assert mongo_keywords.connection_manager.db_connection_pool == {}
 
 
+def test_connect_to_database_defaults_to_a_single_host_without_tls(mongo_keywords, mocker):
+    client_class = mocker.patch("MongoDBLibrary.keywords.MongoClient", return_value=mocker.MagicMock())
+
+    mongo_keywords.connect_to_database(db_name="test_db", db_host="localhost", db_port=27017)
+
+    assert client_class.call_args.kwargs == {
+        "host": "localhost", "port": 27017, "username": None, "password": None
+    }
+
+
+def test_connect_to_database_with_srv_resolves_a_seed_list(mongo_keywords, mocker):
+    """Atlas cluster names have no address record, so they need mongodb+srv."""
+    client_class = mocker.patch("MongoDBLibrary.keywords.MongoClient", return_value=mocker.MagicMock())
+
+    mongo_keywords.connect_to_database(
+        db_name="test_db", db_host="mycluster.abcde.mongodb.net", db_user="user", db_password="pass", srv=True
+    )
+
+    assert client_class.call_args.kwargs == {
+        "host": "mongodb+srv://mycluster.abcde.mongodb.net",
+        "port": None,
+        "username": "user",
+        "password": "pass",
+    }
+
+
+def test_connect_to_database_with_srv_ignores_db_port(mongo_keywords, mocker, caplog):
+    client_class = mocker.patch("MongoDBLibrary.keywords.MongoClient", return_value=mocker.MagicMock())
+
+    mongo_keywords.connect_to_database(
+        db_name="test_db", db_host="mycluster.abcde.mongodb.net", db_port=27017, srv=True
+    )
+
+    assert client_class.call_args.kwargs["port"] is None
+    assert "'db_port' is ignored when 'srv' is enabled" in caplog.text
+
+
+@pytest.mark.parametrize("tls", [True, False], ids=["tls_on", "tls_off"])
+def test_connect_to_database_forces_tls(mongo_keywords, mocker, tls):
+    client_class = mocker.patch("MongoDBLibrary.keywords.MongoClient", return_value=mocker.MagicMock())
+
+    mongo_keywords.connect_to_database(db_name="test_db", db_host="localhost", tls=tls)
+
+    assert client_class.call_args.kwargs["tls"] is tls
+
+
+def test_connect_to_database_omits_tls_when_unset(mongo_keywords, mocker):
+    """Leaving tls unset must let the connection type decide, not force it off."""
+    client_class = mocker.patch("MongoDBLibrary.keywords.MongoClient", return_value=mocker.MagicMock())
+
+    mongo_keywords.connect_to_database(db_name="test_db", db_host="localhost")
+
+    assert "tls" not in client_class.call_args.kwargs
+
+
+def test_connect_to_database_passes_auth_source(mongo_keywords, mocker):
+    """A user created outside db_name cannot authenticate without this."""
+    client_class = mocker.patch("MongoDBLibrary.keywords.MongoClient", return_value=mocker.MagicMock())
+
+    mongo_keywords.connect_to_database(db_name="test_db", db_host="localhost", auth_source="admin")
+
+    assert client_class.call_args.kwargs["authSource"] == "admin"
+
+
+def test_connect_to_database_converts_the_server_selection_timeout(mongo_keywords, mocker):
+    client_class = mocker.patch("MongoDBLibrary.keywords.MongoClient", return_value=mocker.MagicMock())
+
+    mongo_keywords.connect_to_database(db_name="test_db", db_host="localhost", server_selection_timeout="5 seconds")
+
+    assert client_class.call_args.kwargs["serverSelectionTimeoutMS"] == 5000
+
+
+def test_connection_string_converts_the_server_selection_timeout(mongo_keywords, mocker):
+    client_class = mocker.patch("MongoDBLibrary.keywords.MongoClient", return_value=mocker.MagicMock())
+
+    mongo_keywords.connect_to_database_using_connection_string(
+        db_conn_string="mongodb://localhost:27017", db_name="test_db", server_selection_timeout="1500 milliseconds"
+    )
+
+    assert client_class.call_args.kwargs["serverSelectionTimeoutMS"] == 1500
+
+
+def test_optional_connection_arguments_are_omitted_when_unset(mongo_keywords, mocker):
+    client_class = mocker.patch("MongoDBLibrary.keywords.MongoClient", return_value=mocker.MagicMock())
+
+    mongo_keywords.connect_to_database(db_name="test_db", db_host="localhost")
+
+    assert set(client_class.call_args.kwargs) == {"host", "port", "username", "password"}
+
+
+def test_srv_and_tls_are_converted_from_robot_arguments():
+    """RF must convert srv/tls from strings, so `srv=True` in a suite is a boolean."""
+    spec = PythonArgumentParser("connect_to_database").parse(MongoDBKeywords.connect_to_database)
+
+    _, named = spec.convert(["mydb"], [("srv", "True"), ("tls", "False")])
+
+    assert named == [("srv", True), ("tls", False)]
+
+
+# --------------------------------------------------------------------------- #
+# Client reuse
+# --------------------------------------------------------------------------- #
+
+@pytest.fixture
+def two_clients(mocker):
+    """Patch MongoClient to hand out two distinct in-memory clients in turn."""
+    clients = [mongomock.MongoClient(), mongomock.MongoClient()]
+    factory = mocker.patch("MongoDBLibrary.keywords.MongoClient", side_effect=clients)
+    return factory, clients
+
+
+def test_the_same_connection_parameters_reuse_one_client(mongo_keywords, two_clients):
+    """Five aliases against one server should not open five socket pools."""
+    factory, _ = two_clients
+
+    mongo_keywords.connect_to_database(db_name="db", db_host="localhost", alias="a")
+    mongo_keywords.connect_to_database(db_name="db", db_host="localhost", alias="b")
+
+    assert factory.call_count == 1
+    pool = mongo_keywords.connection_manager.db_connection_pool
+    assert pool["a"].client is pool["b"].client
+
+
+def test_different_connection_parameters_get_different_clients(mongo_keywords, two_clients):
+    factory, _ = two_clients
+
+    mongo_keywords.connect_to_database(db_name="db", db_host="localhost", alias="a")
+    mongo_keywords.connect_to_database(db_name="db", db_host="elsewhere", alias="b")
+
+    assert factory.call_count == 2
+
+
+def test_different_credentials_to_one_host_get_different_clients(mongo_keywords, two_clients):
+    factory, _ = two_clients
+
+    mongo_keywords.connect_to_database(db_name="db", db_host="localhost", db_user="alice", alias="a")
+    mongo_keywords.connect_to_database(db_name="db", db_host="localhost", db_user="bob", alias="b")
+
+    assert factory.call_count == 2
+
+
+def test_a_shared_client_survives_disconnecting_one_alias(mongo_keywords, two_clients, mocker):
+    """Closing a shared client would break every other alias using it."""
+    _, clients = two_clients
+    close = mocker.spy(clients[0], "close")
+    mongo_keywords.connect_to_database(db_name="db", db_host="localhost", alias="a")
+    mongo_keywords.connect_to_database(db_name="db", db_host="localhost", alias="b")
+
+    mongo_keywords.disconnect_from_database(alias="a")
+    assert close.call_count == 0
+
+    mongo_keywords.disconnect_from_database(alias="b")
+    assert close.call_count == 1
+
+
+def test_disconnecting_the_last_alias_lets_a_new_connection_build_a_fresh_client(mongo_keywords, two_clients):
+    """A closed client must not be handed out again from the cache."""
+    factory, _ = two_clients
+
+    mongo_keywords.connect_to_database(db_name="db", db_host="localhost", alias="a")
+    mongo_keywords.disconnect_from_database(alias="a")
+    mongo_keywords.connect_to_database(db_name="db", db_host="localhost", alias="a")
+
+    assert factory.call_count == 2
+
+
+def test_a_failed_connection_is_not_cached(mongo_keywords, mocker):
+    failing = mocker.MagicMock(name="FailingClient")
+    failing.admin.command.side_effect = Exception("No servers found yet")
+    working = mongomock.MongoClient()
+    factory = mocker.patch("MongoDBLibrary.keywords.MongoClient", side_effect=[failing, working])
+
+    with pytest.raises(Exception, match="No servers found yet"):
+        mongo_keywords.connect_to_database(db_name="db", db_host="localhost", alias="a")
+    mongo_keywords.connect_to_database(db_name="db", db_host="localhost", alias="a")
+
+    assert factory.call_count == 2
+    assert mongo_keywords.connection_manager.list_connection_pool() == ["a"]
+
+
+def test_overwriting_an_alias_closes_the_replaced_client(mongo_keywords, two_clients, mocker):
+    _, clients = two_clients
+    close = mocker.spy(clients[0], "close")
+    mongo_keywords.connect_to_database(db_name="db", db_host="localhost", alias="a")
+
+    mongo_keywords.connect_to_database(db_name="db", db_host="elsewhere", alias="a")
+
+    assert close.call_count == 1
+    assert mongo_keywords.connection_manager.db_connection_pool["a"].client is clients[1]
+
+
+# --------------------------------------------------------------------------- #
+# Active connection
+# --------------------------------------------------------------------------- #
+
+def test_get_active_alias_defaults_to_default(mongo_keywords):
+    assert mongo_keywords.get_active_alias() == "default"
+
+
+def test_switch_connection_changes_the_active_alias(mongo_keywords, mocker):
+    mongo_keywords.connection_manager.add_to_connection_pool(mocker.MagicMock(), "other")
+
+    mongo_keywords.switch_connection(alias="other")
+
+    assert mongo_keywords.get_active_alias() == "other"
+
+
+def test_switch_connection_to_nonexistent_alias(mongo_keywords):
+    with pytest.raises(ValueError, match="Connection with alias 'missing' is not connected."):
+        mongo_keywords.switch_connection(alias="missing")
+
+
+def test_switch_database_still_works_while_deprecated(mongo_keywords, mocker):
+    """The old name must keep working for suites already using it."""
+    mongo_keywords.connection_manager.add_to_connection_pool(mocker.MagicMock(), "other")
+
+    mongo_keywords.switch_database(alias="other")
+
+    assert mongo_keywords.get_active_alias() == "other"
+
+
+def test_switch_database_is_marked_deprecated():
+    """Robot Framework warns on a keyword whose documentation starts with *DEPRECATED*."""
+    assert MongoDBKeywords.switch_database.__doc__.strip().startswith("*DEPRECATED*")
+
+
 # --------------------------------------------------------------------------- #
 # Disconnecting
 # --------------------------------------------------------------------------- #
