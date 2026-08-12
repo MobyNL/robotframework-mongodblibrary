@@ -15,6 +15,8 @@ class MongoDBLibrary(DynamicCore):
 
     - Introduction
     - Usage
+    - Hosted Clusters
+    - Credentials
     - AWS Authentication
     - Assertions
 
@@ -30,9 +32,34 @@ class MongoDBLibrary(DynamicCore):
 
     | Insert Document Example
     |     [Documentation]    Example of inserting a document into a MongoDB collection
-    |     Connect To Database    my_database    db_user=my_user    db_password=my_password    db_host=localhost    db_port=27017
-    |     ${doc_id}    Insert Document    my_collection    {"name": "example", "value": 42}
+    |     Connect To Database    db_name=my_database    db_user=${DB_USER}    db_password=${DB_PASSWORD}    db_host=localhost    db_port=27017
+    |     ${doc_id}    Insert Document    collection_name=my_collection    document={"name": "example", "value": 42}
     |     Log    Inserted document ID: ${doc_id}
+
+    Connections are held in a pool and identified by an alias. Keywords called without
+    an ``alias`` use the active connection, which is the one most recently connected
+    under the default alias or selected with `Switch Database`.
+
+    == Hosted Clusters ==
+
+    A hosted cluster such as MongoDB Atlas publishes a DNS seed list rather than a
+    single host, and requires TLS. Use `Connect To Database Using Connection String`
+    with the provider's ``mongodb+srv://`` URI, or enable ``srv`` on
+    `Connect To Database`:
+
+    | Connect To Database    db_name=mydb    db_user=${DB_USER}    db_password=${DB_PASSWORD}    db_host=mycluster.abcde.mongodb.net    srv=${True}
+
+    ``db_port`` is ignored when ``srv`` is enabled. ``tls`` forces TLS on or off; left
+    unset it follows the connection type, which means on for ``srv``.
+
+    == Credentials ==
+
+    Robot Framework writes each keyword argument into the log as it appears in the
+    suite source, so a password written literally in a suite ends up in ``log.html``
+    and ``output.xml``. Pass credentials as variables, supplied from a resource file
+    that is not committed, from the command line, or from the environment:
+
+    | Connect To Database    db_name=mydb    db_user=${DB_USER}    db_password=${DB_PASSWORD}    db_host=localhost
 
     == AWS Authentication ==
 
@@ -55,7 +82,7 @@ class MongoDBLibrary(DynamicCore):
 
     === Supported Assertions ===
 
-    Currently supported assertion operators are:
+    The operators provided by the AssertionEngine are accepted, including:
 
     - ``==``: Equal to
     - ``!=``: Not equal to
@@ -63,37 +90,35 @@ class MongoDBLibrary(DynamicCore):
     - ``<``: Less than
     - ``contains``: Contains
 
-    === Supported Formatters ===
+    === Retrying ===
 
-    Formatters can be applied to both the actual and expected values:
-
-    - ``normalize spaces``: Substitutes multiple spaces with a single space.
-    - ``strip``: Removes spaces from the beginning and end of the value.
-    - ``apply to expected``: Applies rules also to the expected value.
-    - ``case insensitive``: Converts value to lowercase.
+    `Check Query Result` and `Check Document Count` retry a failing assertion until
+    ``retry_timeout`` elapses, pausing ``retry_pause`` between attempts. The default
+    ``retry_timeout`` of zero means the assertion is checked once. A ``retry_pause`` of
+    zero polls as fast as the database answers, which is rarely what you want against a
+    shared server.
 
     === Usage ===
 
-    Assertions can be performed inline within keyword calls. The `verify_assertion` method requires:
+    An assertion is made by an assertion keyword, which takes:
 
-    - ``value``: The actual value from the system.
+    - ``query``: The query selecting the documents to check.
     - ``assertion_operator``: The operator defining how validation is performed.
-    - ``assertion_expected``: The expected value.
+    - the expected value, plus ``field`` for `Check Query Result`.
 
-    Optionally, a custom error message and prefix can be provided.
+    Optionally, a custom error message can be provided as ``assertion_message``.
 
     Example:
 
     | Assertion Example
     |     [Documentation]    Example of using assertions in MongoDB Library
-    |     ${actual_value}=    Get Document Field    collection_name=mycollection    query={"key": "value"}    field=key
-    |     Check Query Result    collection_name=mycollection    query={"key": "value"}    assertion_operator==    expected_value=42    field=key
-
+    |     Check Query Result    collection_name=mycollection    query={"key": "value"}    assertion_operator= ==    expected_value=${42}    field=count
+    |     Check Document Count    collection_name=mycollection    query={"key": "value"}    assertion_operator= ==    expected_count=${1}
 
     """
     ROBOT_LIBRARY_SCOPE = 'GLOBAL'
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initializes the MongoDB Library.
 
         Arguments:
