@@ -16,49 +16,81 @@ Thank you for considering contributing to the `robotframework-mongodblibrary` pr
 
 ## Setting Up `local.resource`
 
-Before running tests, you need to create your own copy of the `local.resource` file. Use the `local.resource.copy` file as an example:
+Before running the acceptance tests, you need to create your own copy of the
+`local.resource` file. Use `atest/local.resource.copy` as an example:
 
-1. Duplicate the `local.resource.copy` file and rename it to `local.resource`.
-2. Update the variables in `local.resource` with your MongoDB connection details.
+1. Copy `atest/local.resource.copy` to `atest/local.resource`.
+2. Update the variables with your MongoDB connection details.
 
-## Configuring Python Path
+The name matters: `.gitignore` ignores exactly `local.resource`, so any other name
+(`local.resource copy.copy`, `local.resource.mine`) is **not** ignored and your
+credentials can be committed by accident.
 
-To ensure the tests run correctly, you need to configure the Python path:
-
-1. Use the `robotcode` extension for Robot Framework in your IDE.
-2. Alternatively, add the `./atest/resources` directory to your Python path manually.
-   ```bash
-   export PYTHONPATH=./atest/resources:$PYTHONPATH
-   ```
+For a hosted cluster such as MongoDB Atlas, set `${DB_SRV}` to `${True}` and put the
+cluster name in `${DB_HOST}` — a cluster name is a DNS seed list and has no address
+record of its own, so a plain host and port cannot reach it. Also make sure the
+`<db_password>` placeholder in the connection string you copied from the provider has
+been replaced with the real password.
 
 ## Testing
 
-To run tests, you need access to a MongoDB instance. You can either:
+Unit tests need nothing installed: they run against an in-memory MongoDB provided by
+`mongomock`. The acceptance tests need a real MongoDB instance. You can either:
 
-1. **Set Up a Local MongoDB Instance**:
-   - Install MongoDB on your local machine.
-   - Start the MongoDB server.
+1. **Run one in Docker** (quickest):
+   ```bash
+   docker run -d --name rf-mongodb-atest -p 27017:27017 \
+     -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD=testpass mongo:8
+   ```
+   Then set `${DB_HOST}` to `localhost`, `${DB_PORT}` to `27017`, `${DB_USER}` to
+   `root`, `${DB_PASSWORD}` to `testpass`, `${DB_SRV}` to `${False}`, and
+   `${DB_CONNECT_STRING}` to `mongodb://root:testpass@localhost:27017/?authSource=admin`.
+
+2. **Set Up a Local MongoDB Instance**:
+   - Install MongoDB on your local machine and start the server.
    - Update the `local.resource` file with your MongoDB connection details.
 
-2. **Use the Preconfigured MongoDB Instance**:
-   - Contact the project maintainer to get access to the preconfigured MongoDB instance.
-   - Update the `local.resource` file with the provided connection details.
+3. **Use Your Own Hosted Cluster**:
+   - Add your IP to the provider's access list. Atlas rejects a non-allowlisted IP
+     during the TLS handshake, which surfaces as `TLSV1_ALERT_INTERNAL_ERROR` rather
+     than as an access error.
+   - Update the `local.resource` file, including `${DB_SRV}`.
+
+The acceptance tests empty the collections they use, so point them at a database you
+do not mind losing data from.
 
 ### Running Unit Tests
 
 Unit tests are located in the `utest` directory. To run them, use the following command:
 ```bash
-pytest utest
+poetry run pytest utest
 ```
 
 ### Running Acceptance Tests
 
 Acceptance tests are located in the `atest` directory. To run them, use the following command:
 ```bash
-robotcode run atest
+poetry run robot atest
 ```
 
 Ensure that the `local.resource` file is properly configured before running the tests.
+
+### Linting And Type Checking
+
+```bash
+poetry run ruff check .         # Python
+poetry run robocop check atest  # Robot Framework
+poetry run mypy                 # types
+```
+
+### Regenerating The Keyword Documentation
+
+`MongoDBLibraryKeywords.html` is committed, so regenerate it whenever a keyword or its
+documentation changes:
+
+```bash
+poetry run libdoc MongoDBLibrary MongoDBLibraryKeywords.html
+```
 
 ## Submitting Changes
 
@@ -75,10 +107,6 @@ Ensure that the `local.resource` file is properly configured before running the 
    git push origin feature/<your-feature-name>
    ```
 4. **Create a Pull Request**: Open a pull request to the main repository.
-
-## Code of Conduct
-
-Please adhere to the [Code of Conduct](CODE_OF_CONDUCT.md) when contributing.
 
 ## Questions
 
