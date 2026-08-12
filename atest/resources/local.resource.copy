@@ -1,7 +1,0 @@
-*** Variables ***
-${DB_HOST}              ${EMPTY}
-${DB_USER}              ${EMPTY}
-${DB_PASSWORD}          ${EMPTY}
-${DB_CONNECT_STRING}    ${EMPTY}
-${DB_NAME}              ${EMPTY}
-${DB_PORT}              ${EMPTY}
