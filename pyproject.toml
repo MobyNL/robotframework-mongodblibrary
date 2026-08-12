@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "robotframework-mongodb"
-version = "0.2.2"
+version = "0.3.0"
 description = "MongoDB test library for Robot Framework."
 authors = ["MobyNl <markmoberts@gmail.com>"]
 readme = "README.md"
@@ -57,17 +57,26 @@ ignore = ["E731"]  # lambda assignment
 combine-as-imports = true
 order-by-type = false
 
-[tool.isort]
-# isort is used after Ruff to sort "normal" imports so that multiline imports use
-# the Hanging Grid Grouped mode. Files contained redundant import aliases denoting
-# module/package API are excluded. For details about multiline modes see:
-# https://pycqa.github.io/isort/docs/configuration/multi_line_output_modes.html
-multi_line_output = 5
-extend_skip = ["__init__.py", "src/robot/api/parsing.py"]
-combine_as_imports = true
-order_by_type = false
-line_length = 140
+[tool.mypy]
+python_version = "3.12"
+files = ["MongoDBLibrary"]
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
 
+[[tool.mypy.overrides]]
+# Neither ships type information.
+module = ["assertionengine.*", "robotlibcore.*", "robot.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["utest"]
+
+[tool.coverage.run]
+branch = true
+source = ["MongoDBLibrary"]
 
 [tool.robocop.lint]
 ignore = [
@@ -81,7 +90,6 @@ configure = [
 
 [tool.robot]
 log-level = "DEBUG"
-extend-python-path = ["./atest/resources"]
 
 [tool.robocop.format]
 select = [
