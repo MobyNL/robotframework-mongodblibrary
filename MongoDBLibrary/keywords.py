@@ -1,7 +1,9 @@
-from typing import Any, Optional
+import time
+from typing import Any, Callable, Optional
 
 from assertionengine import AssertionOperator, verify_assertion
 from pymongo import MongoClient, ReturnDocument
+from pymongo.collection import Collection
 from pymongo.database import Database
 from robot.api import logger
 from robot.api.deco import keyword
@@ -26,12 +28,56 @@ class MongoDBKeywords:
         - ``connection_manager``: Manages connections to MongoDB.
         """
         self.connection_manager = connection_manager
-        self.default_alias: str = "default"
+
+    # ----------------------------------------------------------------- #
+    # Internals
+    # ----------------------------------------------------------------- #
+
+    def _resolve_alias(self, alias: Optional[str] = None) -> str:
+        """Return ``alias``, or the currently active alias when None."""
+        return self.connection_manager.default_alias if alias is None else alias
+
+    def _get_database(self, alias: Optional[str] = None) -> Database:
+        """Return the pooled database for ``alias``, raising if it is not connected."""
+        alias = self._resolve_alias(alias)
+        if alias not in self.connection_manager.db_connection_pool:
+            raise KeyError(f"Alias '{alias}' not found in connection pool.")
+        return self.connection_manager.db_connection_pool[alias]
+
+    def _get_collection(self, collection_name: str, alias: Optional[str] = None) -> Collection:
+        """Return a collection from the pooled database for ``alias``."""
+        return self._get_database(alias)[collection_name]
+
+    def _retry_until_no_assertion_error(self, check: Callable[[], None], retry_timeout: str, retry_pause: str) -> None:
+        """
+        Run ``check`` until it stops raising AssertionError or ``retry_timeout`` elapses.
+
+        The deadline is measured against a real clock, so the loop terminates even
+        when ``retry_pause`` is zero and regardless of how long ``check`` itself takes.
+        """
+        deadline = time.monotonic() + timestr_to_secs(retry_timeout)
+        pause = timestr_to_secs(retry_pause)
+        while True:
+            try:
+                check()
+                return
+            except AssertionError:
+                if time.monotonic() >= deadline:
+                    logger.info(f"Timeout '{retry_timeout}' reached")
+                    raise
+                BuiltIn().sleep(pause)
+
+    # ----------------------------------------------------------------- #
+    # Connecting
+    # ----------------------------------------------------------------- #
 
     @keyword
     def connect_to_database(self, db_name: str, db_user: Optional[str] = None, db_password: Optional[str] = None, db_host: Optional[str] = None, db_port: Optional[int] = None, alias: Optional[str] = None) -> None:
         """
         Connects to MongoDB and adds the database object to the connection pool.
+
+        The connection is verified before the keyword passes, so a failure to reach
+        the server or to authenticate is reported here rather than by a later keyword.
 
         Arguments:
         - ``db_name``: Name of the database to connect to.
@@ -45,25 +91,28 @@ class MongoDBKeywords:
         | Connect To Database    db_name=mydb    db_user=user    db_password=pass    db_host=localhost    db_port=27017
 
         """
-        if alias is None:
-            alias = self.default_alias
+        alias = self._resolve_alias(alias)
+        client: MongoClient = MongoClient(
+            host=db_host,
+            port=int(db_port) if db_port else 27017,
+            username=db_user,
+            password=db_password
+        )
         try:
-            database: Database = MongoClient(
-                host=db_host,
-                port=int(db_port) if db_port else 27017,
-                username=db_user,
-                password=db_password
-            )[db_name]
-            self.connection_manager.add_to_connection_pool(database, db_name, alias)
-            logger.info(f"Connected to MongoDB with alias '{alias}' at {db_host}:{db_port}")
-        except Exception as e:
-            logger.error(f"Failed to connect to MongoDB: {e}")
+            client.admin.command("ping")
+        except Exception:
+            client.close()
             raise
+        self.connection_manager.add_to_connection_pool(client[db_name], alias)
+        logger.info(f"Connected to MongoDB with alias '{alias}' at {db_host}:{db_port}")
 
     @keyword
     def connect_to_database_using_connection_string(self, db_conn_string: str, db_name: str, alias: Optional[str] = None) -> None:
         """
         Connects to MongoDB using a connection string and adds the database object to the connection pool.
+
+        The connection is verified before the keyword passes, so a failure to reach
+        the server or to authenticate is reported here rather than by a later keyword.
 
         Arguments:
         - ``db_conn_string``: MongoDB connection string.
@@ -74,15 +123,16 @@ class MongoDBKeywords:
         | Connect To Database Using Connection String    db_conn_string=mongodb://localhost:27017    db_name=mydb
 
         """
-        if alias is None:
-            alias = self.default_alias
+        alias = self._resolve_alias(alias)
+        client: MongoClient = MongoClient(db_conn_string)
         try:
-            database: Database = MongoClient(db_conn_string)[db_name]
-            self.connection_manager.add_to_connection_pool(database, db_name, alias)
-            logger.info(f"Connected to MongoDB with alias '{alias}' using connection string.")
-        except Exception as e:
-            logger.error(f"Failed to connect to MongoDB using connection string: {e}")
+            client.admin.command("ping")
+        except Exception:
+            client.close()
             raise
+        self.connection_manager.add_to_connection_pool(client[db_name], alias)
+        logger.info(f"Connected to MongoDB with alias '{alias}' using connection string.")
+
 
     @keyword
     def disconnect_from_database(self, alias: Optional[str] = None) -> None:
@@ -90,14 +140,13 @@ class MongoDBKeywords:
         Disconnect a specific database connection using its alias.
 
         Arguments:
-        - ``alias``: Alias of the connection to disconnect (optional, defaults to default_alias).
+        - ``alias``: Alias of the connection to disconnect (optional, defaults to the active alias).
 
         Example:
         | Disconnect From Database    alias=myalias
 
         """
-        if alias is None:
-            alias = self.default_alias
+        alias = self._resolve_alias(alias)
         if alias not in self.connection_manager.db_connection_pool:
             logger.error(f"Attempted to disconnect non-existent alias: {alias}")
             raise ValueError(f"Connection with alias '{alias}' is not connected.")
@@ -105,29 +154,103 @@ class MongoDBKeywords:
         logger.info(f"Disconnected alias: {alias}")
 
     @keyword
-    def insert_document(self, collection_name: str, document: dict, alias: Optional[str] = None) -> str:
+    def disconnect_from_all_databases(self) -> None:
+        """
+        Disconnect every connection in the connection pool.
+
+        Useful as a suite teardown, since the library has ``GLOBAL`` scope and
+        otherwise keeps its connections open for the whole run.
+
+        Example:
+        | Disconnect From All Databases
+
+        """
+        self.connection_manager.clear_connection_pool()
+
+    @keyword
+    def list_database_connections(self) -> list[str]:
+        """
+        List the aliases of all currently connected databases.
+
+        Returns:
+        - A list of connection aliases.
+
+        Example:
+        | ${aliases}    List Database Connections
+
+        """
+        return self.connection_manager.list_connection_pool()
+
+
+    @keyword
+    def switch_database(self, alias: str) -> None:
+        """
+        Switch the active database connection using its alias.
+
+        Keywords called afterwards without an explicit ``alias`` use this connection.
+
+        Arguments:
+        - ``alias``: Alias of the connection to switch to.
+
+        Example:
+        | Switch Database    alias=myalias
+
+        """
+        if alias not in self.connection_manager.db_connection_pool:
+            raise ValueError(f"Connection with alias '{alias}' is not connected.")
+        self.connection_manager.default_alias = alias
+
+
+    @keyword
+    def check_if_database_connection_exists(self, alias: Optional[str] = None) -> None:
+        """
+        Check if a database connection exists for the given alias.
+
+        Arguments:
+        - ``alias``: Alias of the connection to check (optional, defaults to the active alias).
+
+        Raises:
+        - ValueError: If the connection does not exist.
+
+        Example:
+        | Check If Database Connection Exists    alias=myalias
+
+        """
+        alias = self._resolve_alias(alias)
+        if alias not in self.connection_manager.db_connection_pool:
+            raise ValueError(f"No database connection exists for alias '{alias}'.")
+
+
+    # ----------------------------------------------------------------- #
+    # Documents
+    # ----------------------------------------------------------------- #
+
+    @keyword
+    def insert_document(self, collection_name: str, document: dict, alias: Optional[str] = None) -> Any:
         """
         Insert a document into a collection.
 
         Arguments:
         - ``collection_name``: Name of the collection where the document will be inserted.
         - ``document``: Document to insert as a dictionary.
-        - ``alias``: Alias of the connection (optional, defaults to default_alias).
+        - ``alias``: Alias of the connection (optional, defaults to the active alias).
 
         Returns:
-        - The ID of the inserted document.
+        - The ID of the inserted document. This is a BSON ``ObjectId`` unless the
+          document supplied its own ``_id``, so it has no length and keywords such as
+          `Should Not Be Empty` do not apply to it.
 
         Example:
         | ${doc_id}    Insert Document    collection_name=mycollection    document={"key": "value"}
 
         """
-        if alias is None:
-            alias = self.default_alias
-        if alias not in self.connection_manager.db_connection_pool:
-            raise KeyError(f"Alias '{alias}' not found in connection pool.")
-        db = self.connection_manager.db_connection_pool[alias]
-        collection = db[collection_name]
+        collection = self._get_collection(collection_name, alias)
         return collection.insert_one(document).inserted_id
+
+
+    # ----------------------------------------------------------------- #
+    # Reading
+    # ----------------------------------------------------------------- #
 
     @keyword
     def find_document(self, collection_name: str, alias: Optional[str] = None, **params: Any) -> Optional[dict]:
@@ -137,22 +260,69 @@ class MongoDBKeywords:
         Arguments:
         - ``collection_name``: Name of the collection to search.
         - ``params``: Query parameters to locate the document.
-        - ``alias``: Alias of the connection (optional, defaults to default_alias).
+        - ``alias``: Alias of the connection (optional, defaults to the active alias).
 
         Returns:
-        - The found document as a dictionary, or None if no document matches the query.
+        - The found document, or None if no document matches the query.
 
         Example:
         | ${document}    Find Document    collection_name=mycollection    key=value
 
         """
-        if alias is None:
-            alias = self.default_alias
-        db = self.connection_manager.db_connection_pool[alias]
-        collection = db[collection_name]
-
+        collection = self._get_collection(collection_name, alias)
         result = collection.find_one(params)
         return DotDict(result) if result is not None else None
+
+
+
+
+    @keyword
+    def count_documents(self, collection_name: str, alias: Optional[str] = None, **params: Any) -> int:
+        """
+        Count the number of documents in a collection matching a query.
+
+        Arguments:
+        - ``collection_name``: Name of the collection.
+        - ``alias``: Alias of the connection (optional, defaults to the active alias).
+        - ``params``: key-value pairs to count matching documents.
+
+        Returns:
+        - The count of matching documents.
+
+        Example:
+        | ${count}    Count Documents    collection_name=mycollection    key=value
+
+        """
+        collection = self._get_collection(collection_name, alias)
+        return collection.count_documents(params)
+
+
+    @keyword
+    def execute_query(self, collection_name: str, pipeline: list, alias: Optional[str] = None) -> list:
+        """
+        Execute an aggregation pipeline query on a collection.
+
+        Arguments:
+        - ``collection_name``: Name of the collection.
+        - ``pipeline``: Aggregation pipeline as a list of stages.
+        - ``alias``: Alias of the connection (optional, defaults to the active alias).
+
+        Returns:
+        - A list of query results.
+
+        Example:
+        | ${results}    Execute Query    collection_name=mycollection    pipeline=[{"$match": {"key": "value"}}]
+
+        """
+        if not isinstance(pipeline, list):
+            raise Exception("Invalid pipeline: must be a list of stages.")
+
+        collection = self._get_collection(collection_name, alias)
+        return list(collection.aggregate(pipeline))
+
+    # ----------------------------------------------------------------- #
+    # Updating
+    # ----------------------------------------------------------------- #
 
     @keyword
     def update_document(self, collection_name: str, query: dict, update: dict, alias: Optional[str] = None) -> Optional[dict]:
@@ -162,22 +332,17 @@ class MongoDBKeywords:
         Arguments:
         - ``collection_name``: Name of the collection.
         - ``query``: Query to find the document to update.
-        - ``update``: Update operations to apply to the document.
-        - ``alias``: Alias of the connection (optional, defaults to default_alias).
+        - ``update``: Fields to set on the document.
+        - ``alias``: Alias of the connection (optional, defaults to the active alias).
 
         Returns:
-        - Updated document as a dictionary, or None if no document matches.
+        - The updated document, or None if no document matches.
 
         Example:
         | ${updated_doc}    Update Document    collection_name=mycollection    query={"key": "value"}    update={"key": "new_value"}
 
         """
-        if alias is None:
-            alias = self.default_alias
-        if alias not in self.connection_manager.db_connection_pool:
-            raise KeyError(f"Alias '{alias}' not found in connection pool.")
-        db = self.connection_manager.db_connection_pool[alias]
-        collection = db[collection_name]
+        collection = self._get_collection(collection_name, alias)
         return collection.find_one_and_update(query, {'$set': update}, return_document=ReturnDocument.AFTER)
 
     @keyword
@@ -192,30 +357,33 @@ class MongoDBKeywords:
         - ``collection_name``: Name of the collection.
         - ``query``: Query to find the document to update.
         - ``update``: Raw MongoDB update document with operators (e.g., {"$push": {...}, "$set": {...}}).
-        - ``alias``: Alias of the connection (optional, defaults to default_alias).
+        - ``alias``: Alias of the connection (optional, defaults to the active alias).
 
         Returns:
-        - Updated document as a dictionary, or None if no document matches.
+        - The updated document, or None if no document matches.
 
         Example:
         | ${updated_doc}    Update Document With Operators    collection_name=mycollection    query={"key": "value"}    update={"$push": {"items": "new_item"}, "$set": {"modified": "2025-01-01"}}
 
         """
-        if alias is None:
-            alias = self.default_alias
-        db = self.connection_manager.db_connection_pool[alias]
-        collection = db[collection_name]
+        collection = self._get_collection(collection_name, alias)
         return collection.find_one_and_update(query, update, return_document=ReturnDocument.AFTER)
 
+
+
+    # ----------------------------------------------------------------- #
+    # Deleting
+    # ----------------------------------------------------------------- #
+
     @keyword
-    def delete_document(self, collection_name: str, alias: Optional[str] = None, **params: str) -> int:
+    def delete_document(self, collection_name: str, alias: Optional[str] = None, **params: Any) -> int:
         """
         Delete a single document from a collection.
 
         Arguments:
         - ``collection_name``: Name of the collection.
         - ``params``: Query parameters to locate the document to delete.
-        - ``alias``: Alias of the connection (optional, defaults to default_alias).
+        - ``alias``: Alias of the connection (optional, defaults to the active alias).
 
         Returns:
         - The count of deleted documents (0 or 1).
@@ -224,23 +392,18 @@ class MongoDBKeywords:
         | ${deleted_count}    Delete Document    collection_name=mycollection    key=value
 
         """
-        if alias is None:
-            alias = self.default_alias
-        if alias not in self.connection_manager.db_connection_pool:
-            raise KeyError(f"Alias '{alias}' not found in connection pool.")
-        db = self.connection_manager.db_connection_pool[alias]
-        collection = db[collection_name]
+        collection = self._get_collection(collection_name, alias)
         return collection.delete_one(params).deleted_count
 
     @keyword
-    def delete_many(self, collection_name: str, alias: Optional[str] = None, **params: str) -> int:
+    def delete_many(self, collection_name: str, alias: Optional[str] = None, **params: Any) -> int:
         """
         Delete multiple documents from a collection.
 
         Arguments:
         - ``collection_name``: Name of the collection.
         - ``params``: Query parameters to find the documents to delete.
-        - ``alias``: Alias of the connection (optional, defaults to default_alias).
+        - ``alias``: Alias of the connection (optional, defaults to the active alias).
 
         Returns:
         - Count of deleted documents.
@@ -249,12 +412,7 @@ class MongoDBKeywords:
         | ${deleted_count}    Delete Many    collection_name=mycollection    key=value
 
         """
-        if alias is None:
-            alias = self.default_alias
-        if alias not in self.connection_manager.db_connection_pool:
-            raise KeyError(f"Alias '{alias}' not found in connection pool.")
-        db = self.connection_manager.db_connection_pool[alias]
-        collection = db[collection_name]
+        collection = self._get_collection(collection_name, alias)
         return collection.delete_many(params).deleted_count
 
     @keyword
@@ -268,7 +426,7 @@ class MongoDBKeywords:
         Arguments:
         - ``collection_name``: Name of the collection.
         - ``query``: MongoDB query document with operators (e.g., {"date": {"$gte": start, "$lt": end}}).
-        - ``alias``: Alias of the connection (optional, defaults to default_alias).
+        - ``alias``: Alias of the connection (optional, defaults to the active alias).
 
         Returns:
         - Count of deleted documents.
@@ -282,64 +440,8 @@ class MongoDBKeywords:
         | ${deleted_count}    Delete Documents With Query    collection_name=activity    query=${query}
 
         """
-        if alias is None:
-            alias = self.default_alias
-        db = self.connection_manager.db_connection_pool[alias]
-        collection = db[collection_name]
+        collection = self._get_collection(collection_name, alias)
         return collection.delete_many(query).deleted_count
-
-    @keyword
-    def execute_query(self, collection_name: str, pipeline: list, alias: Optional[str] = None) -> list:
-        """
-        Execute an aggregation pipeline query on a collection.
-
-        Arguments:
-        - ``collection_name``: Name of the collection.
-        - ``pipeline``: Aggregation pipeline as a list of stages.
-        - ``alias``: Alias of the connection (optional, defaults to default_alias).
-
-        Returns:
-        - A list of query results.
-
-        Example:
-        | ${results}    Execute Query    collection_name=mycollection    pipeline=[{"$match": {"key": "value"}}]
-
-        """
-        if alias is None:
-            alias = self.default_alias
-
-        if not isinstance(pipeline, list):
-            raise Exception("Invalid pipeline: must be a list of stages.")
-
-        if alias not in self.connection_manager.db_connection_pool:
-            raise KeyError(f"Alias '{alias}' not found in connection pool.")
-
-        db = self.connection_manager.db_connection_pool[alias]
-        collection = db[collection_name]
-        return list(collection.aggregate(pipeline))
-
-    @keyword
-    def count_documents(self, collection_name: str, alias: Optional[str] = None,  **params) -> int:
-        """
-        Count the number of documents in a collection matching a query.
-
-        Arguments:
-        - ``collection_name``: Name of the collection.
-        - ``alias``: Alias of the connection (optional, defaults to default_alias).
-        - ``params``: key-value pairs to count matching documents.
-
-        Returns:
-        - The count of matching documents.
-
-        Example:
-        | ${count}    Count Documents    collection_name=mycollection    query={"key": "value"}
-
-        """
-        if alias is None:
-            alias = self.default_alias
-        db = self.connection_manager.db_connection_pool[alias]
-        collection = db[collection_name]
-        return collection.count_documents(params)
 
     @keyword
     def delete_all_documents_from_collection(self, collection_name: str, alias: Optional[str] = None) -> int:
@@ -348,7 +450,7 @@ class MongoDBKeywords:
 
         Arguments:
         - ``collection_name``: Name of the collection.
-        - ``alias``: Alias of the connection (optional, defaults to default_alias).
+        - ``alias``: Alias of the connection (optional, defaults to the active alias).
 
         Returns:
         - The count of deleted documents.
@@ -357,30 +459,15 @@ class MongoDBKeywords:
         | ${deleted_count}    Delete All Documents From Collection    collection_name=mycollection
 
         """
-        if alias is None:
-            alias = self.default_alias
-        if alias not in self.connection_manager.db_connection_pool:
-            raise KeyError(f"Alias '{alias}' not found in connection pool.")
-        db = self.connection_manager.db_connection_pool[alias]
-        collection = db[collection_name]
-        result = collection.delete_many({})
-        return result.deleted_count
+        collection = self._get_collection(collection_name, alias)
+        return collection.delete_many({}).deleted_count
 
-    @keyword
-    def switch_database(self, alias: str) -> None:
-        """
-        Switch the active database connection using its alias.
 
-        Arguments:
-        - ``alias``: Alias of the connection to switch to.
 
-        Example:
-        | Switch Database    alias=myalias
 
-        """
-        if alias not in self.connection_manager.db_connection_pool:
-            raise ValueError(f"Connection with alias '{alias}' is not connected.")
-        self.connection_manager.default_alias = alias
+    # ----------------------------------------------------------------- #
+    # Assertions
+    # ----------------------------------------------------------------- #
 
     @keyword
     def check_query_result(
@@ -407,51 +494,32 @@ class MongoDBKeywords:
         - ``assertion_message``: Custom message for assertion failure (optional).
         - ``retry_timeout``: Timeout for retrying the query (optional).
         - ``retry_pause``: Pause duration between retries (optional).
-        - ``alias``: Alias of the connection (optional, defaults to default_alias).
+        - ``alias``: Alias of the connection (optional, defaults to the active alias).
 
         Example:
-        | Check Query Result    collection_name=mycollection    query={"key": "value"}    assertion_operator==    expected_value=42    field=key
+        | Check Query Result    collection_name=mycollection    query={"key": "value"}    assertion_operator= ==    expected_value=42    field=key
 
         """
-        if alias is None:
-            alias = self.default_alias
+        collection = self._get_collection(collection_name, alias)
 
-        if alias not in self.connection_manager.db_connection_pool:
-            logger.error(f"Alias '{alias}' not found in connection pool.")
-            raise KeyError(f"Alias '{alias}' not found in connection pool.")
+        def check() -> None:
+            results = list(collection.find(query))
+            if not results:
+                raise AssertionError("Query returned no results.")
 
-        check_ok = False
-        time_counter = 0
+            for document in results:
+                if field not in document:
+                    raise AssertionError(f"Field '{field}' not found in document.")
 
-        db = self.connection_manager.db_connection_pool[alias]
-        collection = db[collection_name]
+                verify_assertion(
+                    document[field],
+                    assertion_operator,
+                    expected_value,
+                    f"Field '{field}' value mismatch:",
+                    assertion_message
+                )
 
-        while not check_ok:
-            try:
-                results = list(collection.find(query))
-                if not results:
-                    raise AssertionError("Query returned no results.")
-
-                for document in results:
-                    if field not in document:
-                        raise AssertionError(f"Field '{field}' not found in document.")
-
-                    actual_value = document[field]
-                    verify_assertion(
-                        actual_value,
-                        assertion_operator,
-                        expected_value,
-                        f"Field '{field}' value mismatch:",
-                        assertion_message
-                    )
-
-                check_ok = True
-            except AssertionError as e:
-                if time_counter >= timestr_to_secs(retry_timeout):
-                    logger.info(f"Timeout '{retry_timeout}' reached")
-                    raise e
-                BuiltIn().sleep(retry_pause)
-                time_counter += timestr_to_secs(retry_pause)
+        self._retry_until_no_assertion_error(check, retry_timeout, retry_pause)
 
     @keyword
     def check_document_count(
@@ -476,59 +544,21 @@ class MongoDBKeywords:
         - ``assertion_message``: Custom message for assertion failure (optional).
         - ``retry_timeout``: Timeout for retrying the query (optional).
         - ``retry_pause``: Pause duration between retries (optional).
-        - ``alias``: Alias of the connection (optional, defaults to default_alias).
+        - ``alias``: Alias of the connection (optional, defaults to the active alias).
 
         Example:
-        | Check Document Count    collection_name=mycollection    query={"key": "value"}    assertion_operator==    expected_count=5
+        | Check Document Count    collection_name=mycollection    query={"key": "value"}    assertion_operator= ==    expected_count=5
 
         """
-        if alias is None:
-            alias = self.default_alias
+        collection = self._get_collection(collection_name, alias)
 
-        if alias not in self.connection_manager.db_connection_pool:
-            logger.error(f"Alias '{alias}' not found in connection pool.")
-            raise KeyError(f"Alias '{alias}' not found in connection pool.")
+        def check() -> None:
+            verify_assertion(
+                collection.count_documents(query),
+                assertion_operator,
+                expected_count,
+                "Wrong document count:",
+                assertion_message
+            )
 
-        check_ok = False
-        time_counter = 0
-
-        db = self.connection_manager.db_connection_pool[alias]
-        collection = db[collection_name]
-
-        while not check_ok:
-            try:
-                actual_count = collection.count_documents(query)
-                verify_assertion(
-                    actual_count,
-                    assertion_operator,
-                    expected_count,
-                    "Wrong document count:",
-                    assertion_message
-                )
-                check_ok = True
-            except AssertionError as e:
-                if time_counter >= timestr_to_secs(retry_timeout):
-                    logger.info(f"Timeout '{retry_timeout}' reached")
-                    raise e
-                BuiltIn().sleep(retry_pause)
-                time_counter += timestr_to_secs(retry_pause)
-
-    @keyword
-    def check_if_database_connection_exists(self, alias: Optional[str] = None) -> None:
-        """
-        Check if a database connection exists for the given alias.
-
-        Arguments:
-        - ``alias``: Alias of the connection to check (optional, defaults to default_alias).
-
-        Raises:
-        - ValueError: If the connection does not exist.
-
-        Example:
-        | Check If Database Connection Exists    alias=myalias
-
-        """
-        if alias is None:
-            alias = self.default_alias
-        if alias not in self.connection_manager.db_connection_pool:
-            raise ValueError(f"No database connection exists for alias '{alias}'.")
+        self._retry_until_no_assertion_error(check, retry_timeout, retry_pause)
