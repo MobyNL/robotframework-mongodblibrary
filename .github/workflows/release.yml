@@ -10,6 +10,11 @@ jobs:
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
+      # Declaring any permission replaces the whole default set, so contents: read has
+      # to be named too. Without it the token cannot clone a private repository and
+      # checkout fails with "repository not found", which reads like a wrong URL rather
+      # than a missing scope.
+      contents: read
       # Required for PyPI trusted publishing; no API token needs storing.
       id-token: write
     steps:
