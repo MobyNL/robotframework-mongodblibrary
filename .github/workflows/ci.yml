@@ -18,9 +18,9 @@ jobs:
       matrix:
         python-version: ["3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -62,9 +62,9 @@ jobs:
         options: >-
           --hostname localhost
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -116,7 +116,7 @@ jobs:
 
       - name: Upload Robot Framework results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: atest-results
           path: atest-results/
@@ -175,10 +175,10 @@ jobs:
             echo "::notice::No Atlas API key configured; assuming the access list already admits this runner."
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.check.outputs.configured == 'true'
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         if: steps.check.outputs.configured == 'true'
         with:
           python-version: "3.12"
@@ -290,7 +290,7 @@ jobs:
 
       - name: Upload Robot Framework results
         if: always() && steps.check.outputs.configured == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: atest-atlas-results
           path: atest-atlas-results/
