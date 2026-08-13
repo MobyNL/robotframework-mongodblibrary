@@ -64,6 +64,36 @@ Verify Delete Many Documents Using Connection String
     Delete Many Should Delete Every Matching Document    test_alias_delete_many
     [Teardown]    Disconnect From Database    alias=test_alias_delete_many
 
+Verify Get Distinct Values Using Connection String
+    [Documentation]    Test collecting the distinct values of a field.
+    [Setup]    Connect To Test Database    test_alias_distinct
+    Get Distinct Values Should Return Each Value Once    test_alias_distinct
+    [Teardown]    Disconnect From Database    alias=test_alias_distinct
+
+Verify Replace Document Using Connection String
+    [Documentation]    Test replacing a whole document rather than merging into it.
+    [Setup]    Connect To Test Database    test_alias_replace
+    Replace Document Should Remove The Fields It Does Not Mention    test_alias_replace
+    [Teardown]    Disconnect From Database    alias=test_alias_replace
+
+Verify Upsert Using Connection String
+    [Documentation]    Test that upserting is idempotent.
+    [Setup]    Connect To Test Database    test_alias_upsert
+    Update Document Should Insert When Upserting Against No Match    test_alias_upsert
+    [Teardown]    Disconnect From Database    alias=test_alias_upsert
+
+Verify Delete Document And Return It Using Connection String
+    [Documentation]    Test deleting a document and reading it in one operation.
+    [Setup]    Connect To Test Database    test_alias_delete_return
+    Delete Document And Return It Should Give Back What It Deleted    test_alias_delete_return
+    [Teardown]    Disconnect From Database    alias=test_alias_delete_return
+
+Verify Document Existence Assertions Using Connection String
+    [Documentation]    Test the existence assertions against real data.
+    [Setup]    Connect To Test Database    test_alias_exists
+    Document Existence Assertions Should Agree With The Data    test_alias_exists
+    [Teardown]    Disconnect From Database    alias=test_alias_exists
+
 Verify Delete All Documents From Collection Using Connection String
     [Documentation]    Test deleting all documents from a MongoDB collection.
     [Setup]    Connect To Test Database    test_alias_delete_all
