@@ -83,3 +83,17 @@ def test_library_initialization():
 
     assert hasattr(library, 'connection_manager')
     assert library.connection_manager is not None
+
+
+def test_the_library_reports_its_version():
+    """Libdoc and `Get Library Instance` both read this.
+
+    'unknown' means the distribution name in the importlib.metadata lookup no longer
+    matches the one in pyproject.toml, which is the realistic way this breaks.
+    """
+    import re
+
+    from MongoDBLibrary import MongoDBLibrary
+
+    assert MongoDBLibrary.ROBOT_LIBRARY_VERSION != "unknown"
+    assert re.fullmatch(r"\d+\.\d+\.\d+.*", MongoDBLibrary.ROBOT_LIBRARY_VERSION)
