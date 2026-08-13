@@ -23,10 +23,13 @@ class MongoDBLibrary(DynamicCore):
     - Introduction
     - Usage
     - Object Ids
+    - Resetting Between Tests
+    - Writing A Fixture That Can Run Twice
     - Hosted Clusters
     - Credentials
     - AWS Authentication
     - Assertions
+    - Beyond These Keywords
 
     == Introduction ==
 
@@ -103,6 +106,44 @@ class MongoDBLibrary(DynamicCore):
     With the option off, nothing about your queries is altered and passing a string
     ``_id`` against an ObjectId-keyed collection will silently match nothing again.
 
+    == Resetting Between Tests ==
+
+    There are two ways to clear a collection and they are not interchangeable.
+
+    `Delete All Documents From Collection` removes the documents. Everything *defined*
+    on the collection stays: its indexes, and any options it was created with. So a
+    unique index created by one test still rejects the next test's fixtures, long after
+    the documents that justified it are gone.
+
+    `Drop Collection` removes the collection itself, indexes and options included. That
+    is what actually returns a collection to its original state. Dropping one that does
+    not exist succeeds and does nothing, so it is safe in a teardown that runs after a
+    setup failed:
+
+    | [Teardown]    Drop Collection    collection_name=orders
+
+    Use `Delete All Documents From Collection` when the indexes are part of what the
+    suite is testing against, and `Drop Collection` otherwise.
+
+    For a suite that wants a database to itself, `Drop Database` removes the whole thing.
+    It always names its target, so the connected database cannot be dropped by leaving an
+    argument out — but it is still deletion, and pointing it at a shared database
+    destroys whatever else was using it.
+
+    == Writing A Fixture That Can Run Twice ==
+
+    A setup step that inserts a document fails the second time it runs, which makes a
+    suite depend on the state it started from. The ``upsert`` argument writes the
+    document if it is not there and updates it if it is:
+
+    | Update Document    collection_name=users    query={"email": "a@example.test"}    update={"active": ${True}}    upsert=${True}
+
+    `Update Document` merges: fields already on the document and not mentioned are left
+    alone, so it can never remove one. When the fixture has to be exactly a given
+    document, `Replace Document` swaps the whole thing instead:
+
+    | Replace Document    collection_name=users    query={"email": "a@example.test"}    replacement={"email": "a@example.test", "active": ${True}}    upsert=${True}
+
     == Hosted Clusters ==
 
     A hosted cluster such as MongoDB Atlas publishes a DNS seed list rather than a
@@ -153,13 +194,33 @@ class MongoDBLibrary(DynamicCore):
     - ``<``: Less than
     - ``contains``: Contains
 
+    === The assertion keywords ===
+
+    - `Check Query Result` — a field of every matching document against a value.
+    - `Check Document Count` — how many documents match.
+    - `Check Distinct Values` — the set of values a field takes across the collection.
+      This is how to assert that *nothing* is in a given state, which counting cannot
+      express as directly.
+    - `Document Should Exist` and `Document Should Not Exist` — the plain question,
+      taking the same free query parameters as `Find Document`.
+    - `Check Collection Exists` and `Check Index Exists` — for asserting that a migration
+      or an application's start-up created what it was supposed to.
+
     === Retrying ===
 
-    `Check Query Result` and `Check Document Count` retry a failing assertion until
-    ``retry_timeout`` elapses, pausing ``retry_pause`` between attempts. The default
-    ``retry_timeout`` of zero means the assertion is checked once. A ``retry_pause`` of
-    zero polls as fast as the database answers, which is rarely what you want against a
-    shared server.
+    Every assertion keyword retries a failing assertion until ``retry_timeout`` elapses,
+    pausing ``retry_pause`` between attempts. The default ``retry_timeout`` of zero means
+    the assertion is checked once. A ``retry_pause`` of zero polls as fast as the
+    database answers, which is rarely what you want against a shared server.
+
+    Give ``retry_timeout`` a value whenever the thing being asserted is written by
+    something the test has just triggered and does not otherwise wait for:
+
+    | Document Should Exist    collection_name=orders    order_id=A-1    retry_timeout=10 seconds
+
+    This is the reason to prefer these keywords over a hand-written
+    ``Wait Until Keyword Succeeds`` around `Find Document`: the wait is the part that is
+    easy to get wrong.
 
     === Usage ===
 
@@ -177,6 +238,24 @@ class MongoDBLibrary(DynamicCore):
     |     [Documentation]    Example of using assertions in MongoDB Library
     |     Check Query Result    collection_name=mycollection    query={"key": "value"}    assertion_operator= ==    expected_value=${42}    field=count
     |     Check Document Count    collection_name=mycollection    query={"key": "value"}    assertion_operator= ==    expected_count=${1}
+
+    == Beyond These Keywords ==
+
+    The keywords cover what a test suite normally needs, which is a small part of what
+    MongoDB can do. `Run Database Command` reaches the rest — server statistics, storage
+    sizes, query plans and the administrative commands are all database commands, and
+    there are far too many to give each a keyword:
+
+    | ${stats}    Run Database Command    command={"collStats": "orders"}
+    | ${plan}     Run Database Command    command={"explain": {"find": "orders", "filter": {"status": "new"}}}
+    | ${info}     Run Database Command    command={"listCollections": 1}
+
+    A command written as a document is read as one; anything else is sent as a bare
+    command name, so ``command=ping`` works too.
+
+    Deliberately not wrapped, because none of them fit a synchronous keyword taken one at
+    a time: transactions and sessions, change streams, GridFS, and client-side field
+    level encryption. Use pymongo directly if a suite needs those.
 
     """
     ROBOT_LIBRARY_SCOPE = 'GLOBAL'

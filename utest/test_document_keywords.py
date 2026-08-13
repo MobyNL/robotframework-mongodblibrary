@@ -254,6 +254,80 @@ def test_execute_query_rejects_a_non_list_pipeline(mongo):
         mongo.execute_query("mycollection", pipeline="not-a-pipeline")
 
 
+def test_execute_query_allowing_disk_use(scored):
+    found = scored.execute_query("mycollection", [{"$match": {"score": 10}}], allow_disk_use=True)
+
+    assert [d["key"] for d in found] == ["c"]
+
+
+def test_allow_disk_use_is_left_out_of_the_call_when_off(mongo_keywords, mock_db):
+    """The option is only meaningful on a real server, so an old one is never sent it."""
+    mock_db.__getitem__.return_value.aggregate.return_value = []
+
+    mongo_keywords.execute_query("mycollection", [])
+
+    assert mock_db.__getitem__.return_value.aggregate.call_args.kwargs == {}
+
+
+def test_count_documents_limits(scored):
+    """A limit answers 'are there at least N' without counting the whole collection."""
+    assert scored.count_documents("mycollection", limit=2) == 2
+
+
+def test_count_documents_skips(scored):
+    assert scored.count_documents("mycollection", skip=1) == 2
+
+
+def test_count_documents_with_query_limits(scored):
+    assert scored.count_documents_with_query("mycollection", {"score": {"$gte": 1}}, limit=1) == 1
+
+
+def test_a_zero_limit_counts_everything(scored):
+    """Regression guard: count_documents rejects limit=0, so the default must be omitted."""
+    assert scored.count_documents("mycollection", limit=0, skip=0) == 3
+    assert scored.count_documents_with_query("mycollection", {}, limit=0, skip=0) == 3
+
+
+def test_get_estimated_document_count(scored):
+    assert scored.get_estimated_document_count("mycollection") == 3
+
+
+# --------------------------------------------------------------------------- #
+# Distinct values
+# --------------------------------------------------------------------------- #
+
+def test_get_distinct_values_returns_each_value_once(mongo):
+    mongo.insert_documents(
+        "mycollection",
+        [{"status": "new"}, {"status": "new"}, {"status": "shipped"}],
+    )
+
+    assert sorted(mongo.get_distinct_values("mycollection", "status")) == ["new", "shipped"]
+
+
+def test_get_distinct_values_narrowed_by_a_query(mongo):
+    mongo.insert_documents(
+        "mycollection",
+        [{"status": "new", "region": "eu"}, {"status": "shipped", "region": "us"}],
+    )
+
+    found = mongo.get_distinct_values("mycollection", "status", query={"region": "eu"})
+
+    assert found == ["new"]
+
+
+def test_get_distinct_values_of_an_absent_field_is_empty(mongo):
+    mongo.insert_document("mycollection", {"key": "value"})
+
+    assert mongo.get_distinct_values("mycollection", "absent") == []
+
+
+def test_get_distinct_values_coerces_an_id_in_its_query(mongo):
+    doc_id = mongo.insert_document("mycollection", {"status": "new"})
+
+    assert mongo.get_distinct_values("mycollection", "status", query={"_id": str(doc_id)}) == ["new"]
+
+
 # --------------------------------------------------------------------------- #
 # Writing many documents
 # --------------------------------------------------------------------------- #
@@ -285,6 +359,171 @@ def test_update_documents_with_operators(mongo):
 
     assert changed == 2
     assert sorted(d["n"] for d in mongo.find_documents("mycollection")) == [11, 12]
+
+
+def test_insert_documents_unordered_still_returns_every_id(mongo):
+    ids = mongo.insert_documents("mycollection", [{"key": "a"}, {"key": "b"}], ordered=False)
+
+    assert len(ids) == 2
+
+
+def test_an_unordered_insert_keeps_going_past_a_failure(mongo):
+    """The point of ordered=False: one bad document does not discard the rest."""
+    mongo.create_index("mycollection", {"key": 1}, unique=True)
+    mongo.insert_document("mycollection", {"key": "b"})
+
+    with pytest.raises(Exception, match="duplicate|E11000"):
+        mongo.insert_documents(
+            "mycollection",
+            [{"key": "a"}, {"key": "b"}, {"key": "c"}],
+            ordered=False,
+        )
+
+    assert sorted(d["key"] for d in mongo.find_documents("mycollection")) == ["a", "b", "c"]
+
+
+def test_an_ordered_insert_stops_at_the_failure(mongo):
+    mongo.create_index("mycollection", {"key": 1}, unique=True)
+    mongo.insert_document("mycollection", {"key": "b"})
+
+    with pytest.raises(Exception, match="duplicate|E11000"):
+        mongo.insert_documents("mycollection", [{"key": "a"}, {"key": "b"}, {"key": "c"}])
+
+    assert sorted(d["key"] for d in mongo.find_documents("mycollection")) == ["a", "b"]
+
+
+# --------------------------------------------------------------------------- #
+# Upserting
+# --------------------------------------------------------------------------- #
+
+def test_update_document_inserts_when_nothing_matches_and_upsert_is_on(mongo):
+    document = mongo.update_document(
+        "mycollection", {"email": "a@example.test"}, {"active": True}, upsert=True
+    )
+
+    assert document["email"] == "a@example.test"
+    assert document["active"] is True
+
+
+def test_update_document_without_upsert_still_returns_none(mongo):
+    assert mongo.update_document("mycollection", {"email": "a@example.test"}, {"active": True}) is None
+
+
+def test_upserting_twice_updates_rather_than_duplicating(mongo):
+    """The point of upsert: a fixture step that does not care whether it has run."""
+    for _ in range(2):
+        mongo.update_document("mycollection", {"email": "a@example.test"}, {"active": True}, upsert=True)
+
+    assert mongo.count_documents("mycollection", email="a@example.test") == 1
+
+
+def test_update_document_with_operators_upserts(mongo):
+    document = mongo.update_document_with_operators(
+        "mycollection", {"key": "v"}, {"$inc": {"n": 5}}, upsert=True
+    )
+
+    assert document["n"] == 5
+
+
+def test_update_documents_upserts_and_reports_no_change(mongo):
+    """An upserted document was inserted, not modified, so modified_count is 0."""
+    changed = mongo.update_documents("mycollection", {"key": "v"}, {"checked": True}, upsert=True)
+
+    assert changed == 0
+    assert mongo.count_documents("mycollection", key="v") == 1
+
+
+def test_update_documents_with_operators_upserts(mongo):
+    changed = mongo.update_documents_with_operators(
+        "mycollection", {"key": "v"}, {"$inc": {"n": 1}}, upsert=True
+    )
+
+    assert changed == 0
+    assert mongo.find_document("mycollection", key="v")["n"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# Replacing
+# --------------------------------------------------------------------------- #
+
+def test_replace_document_removes_the_fields_it_does_not_mention(mongo):
+    """The difference from Update Document, which can only ever add or overwrite."""
+    mongo.insert_document("mycollection", {"key": "v", "stale": "gone"})
+
+    replaced = mongo.replace_document("mycollection", {"key": "v"}, {"key": "v"})
+
+    assert "stale" not in replaced
+
+
+def test_replace_document_keeps_the_id(mongo):
+    doc_id = mongo.insert_document("mycollection", {"key": "v"})
+
+    replaced = mongo.replace_document("mycollection", {"key": "v"}, {"key": "other"})
+
+    assert replaced["_id"] == doc_id
+
+
+def test_replace_document_returns_none_when_nothing_matches(mongo):
+    assert mongo.replace_document("mycollection", {"key": "absent"}, {"key": "new"}) is None
+
+
+def test_replace_document_upserts(mongo):
+    replaced = mongo.replace_document("mycollection", {"key": "absent"}, {"key": "new"}, upsert=True)
+
+    assert replaced["key"] == "new"
+
+
+def test_replace_document_finds_its_target_by_string_id(mongo):
+    doc_id = mongo.insert_document("mycollection", {"key": "v"})
+
+    replaced = mongo.replace_document("mycollection", {"_id": str(doc_id)}, {"key": "other"})
+
+    assert replaced["key"] == "other"
+
+
+def test_replace_document_returns_a_dot_accessible_document(mongo):
+    mongo.insert_document("mycollection", {"key": "v"})
+
+    replaced = mongo.replace_document("mycollection", {"key": "v"}, {"key": "other"})
+
+    assert isinstance(replaced, DotDict)
+
+
+# --------------------------------------------------------------------------- #
+# Deleting and returning
+# --------------------------------------------------------------------------- #
+
+def test_delete_document_and_return_it_gives_back_what_it_deleted(mongo):
+    mongo.insert_document("mycollection", {"key": "v", "payload": 42})
+
+    deleted = mongo.delete_document_and_return_it("mycollection", key="v")
+
+    assert deleted["payload"] == 42
+    assert mongo.count_documents("mycollection") == 0
+
+
+def test_delete_document_and_return_it_returns_none_when_nothing_matches(mongo):
+    assert mongo.delete_document_and_return_it("mycollection", key="absent") is None
+
+
+def test_delete_document_and_return_it_takes_only_one(mongo):
+    mongo.insert_documents("mycollection", [{"key": "v"}, {"key": "v"}])
+
+    mongo.delete_document_and_return_it("mycollection", key="v")
+
+    assert mongo.count_documents("mycollection", key="v") == 1
+
+
+def test_delete_document_and_return_it_finds_its_target_by_string_id(mongo):
+    doc_id = mongo.insert_document("mycollection", {"key": "v"})
+
+    assert mongo.delete_document_and_return_it("mycollection", _id=str(doc_id))["key"] == "v"
+
+
+def test_delete_document_and_return_it_returns_a_dot_accessible_document(mongo):
+    mongo.insert_document("mycollection", {"key": "v"})
+
+    assert isinstance(mongo.delete_document_and_return_it("mycollection", key="v"), DotDict)
 
 
 # --------------------------------------------------------------------------- #
@@ -328,6 +567,60 @@ def test_drop_index(mongo):
     assert [index["name"] for index in mongo.list_indexes("mycollection")] == ["_id_"]
 
 
+def test_a_sparse_unique_index_allows_many_documents_without_the_field(mongo):
+    """Without sparse, a second document missing the field is a duplicate null."""
+    mongo.create_index("mycollection", {"email": 1}, unique=True, sparse=True)
+
+    mongo.insert_documents("mycollection", [{"key": "a"}, {"key": "b"}])
+
+    assert mongo.count_documents("mycollection") == 2
+
+
+@pytest.mark.parametrize(
+    "kwargs, expected_option, expected_value",
+    [
+        param({"expire_after_seconds": 3600}, "expireAfterSeconds", 3600, id="ttl"),
+        param(
+            {"partial_filter_expression": {"status": "active"}},
+            "partialFilterExpression",
+            {"status": "active"},
+            id="partial",
+        ),
+    ],
+)
+def test_create_index_passes_its_options_through(mongo_keywords, mock_db, kwargs, expected_option, expected_value):
+    """mongomock accepts these options but does not record them, so check the call."""
+    mongo_keywords.create_index("mycollection", {"created": 1}, **kwargs)
+
+    passed = mock_db.__getitem__.return_value.create_index.call_args.kwargs
+
+    assert passed[expected_option] == expected_value
+
+
+def test_create_index_omits_a_ttl_it_was_not_given(mongo_keywords, mock_db):
+    mongo_keywords.create_index("mycollection", {"created": 1})
+
+    assert "expireAfterSeconds" not in mock_db.__getitem__.return_value.create_index.call_args.kwargs
+
+
+def test_get_index_information_is_keyed_by_index_name(mongo):
+    mongo.create_index("mycollection", {"email": 1}, index_name="by_email")
+
+    information = mongo.get_index_information("mycollection")
+
+    assert sorted(information) == ["_id_", "by_email"]
+
+
+def test_drop_all_indexes_leaves_only_the_id_index(mongo):
+    mongo.insert_document("mycollection", {"email": "a@example.test"})
+    mongo.create_index("mycollection", {"email": 1})
+    mongo.create_index("mycollection", {"name": 1})
+
+    mongo.drop_all_indexes("mycollection")
+
+    assert [index["name"] for index in mongo.list_indexes("mycollection")] == ["_id_"]
+
+
 # --------------------------------------------------------------------------- #
 # Alias handling for the new keywords
 # --------------------------------------------------------------------------- #
@@ -345,6 +638,12 @@ def test_drop_index(mongo):
         param("create_index", ("mycollection", {"key": 1}), {}, id="create_index"),
         param("list_indexes", ("mycollection",), {}, id="list_indexes"),
         param("drop_index", ("mycollection", "key_1"), {}, id="drop_index"),
+        param("get_index_information", ("mycollection",), {}, id="get_index_information"),
+        param("drop_all_indexes", ("mycollection",), {}, id="drop_all_indexes"),
+        param("get_distinct_values", ("mycollection", "key"), {}, id="get_distinct_values"),
+        param("get_estimated_document_count", ("mycollection",), {}, id="estimated_count"),
+        param("replace_document", ("mycollection", {}, {}), {}, id="replace_document"),
+        param("delete_document_and_return_it", ("mycollection",), {"key": "v"}, id="delete_and_return"),
     ],
 )
 def test_missing_alias_raises_the_same_error_everywhere(mongo_keywords, keyword_name, args, kwargs):
