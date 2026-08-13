@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-13
+
 ### Changed
 
 - Robot Framework 5.0 and later are supported, and Python 3.10 and later, where before the
@@ -56,6 +58,38 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   converted to string or None` — a clear error rather than a silent one, since Robot
   Framework refused the conversion instead of sending the literal text `<secret>` as the
   password.
+
+### Documentation
+
+- The AWS documentation never said how to enable AWS authentication. Doing so requires
+  `authMechanism=MONGODB-AWS` together with `authSource=$external`, and neither appeared in
+  README.md or in the class docstring, so the documented example — a connection string with
+  nothing AWS-specific in it — quietly authenticated with SCRAM instead. Both are now
+  documented, including that `auth_mechanism` and `auth_source` already reach them as
+  keyword arguments, so no connection string is needed for IAM.
+
+  The one section is now two, because Amazon DocumentDB and AWS IAM authentication are
+  independent choices rather than one path. DocumentDB's own requirements are documented
+  for the first time: TLS against Amazon's CA bundle, and `retryWrites=false`, which is
+  required and without which every write fails. `tlsCAFile` has no keyword argument, so
+  that is the one case where the connection string is the only route.
+
+- The docstring claimed the library reads `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and
+  `AWS_SESSION_TOKEN`. It reads none of them: there is no AWS-specific code in the library,
+  `pymongo-auth-aws` resolves credentials, and an EC2, ECS, EKS or Lambda role is used with
+  no credentials given at all. It also told the reader to install `pymongo[aws]`, which
+  installs pymongo's extra and leaves this package's alone; the extra it meant is
+  `robotframework-mongodb[aws]`. The MongoDB URL both files linked to now returns 404.
+
+- `coerce_object_ids` is the library's only import-time argument but had no section of its
+  own. A new "Importing" section covers it and the `GLOBAL` scope, including the
+  consequence that two suites importing with different values get separate instances, and
+  therefore separate connection pools rather than shared connections.
+
+- README.md now opens with a runnable example before the `Secret` discussion rather than
+  after it, and gains the multi-connection `alias` example the feature list promised but
+  never showed, badges and a table of contents. The contributor-facing CI detail is
+  compressed.
 
 ## [1.0.0] - 2026-08-13
 
