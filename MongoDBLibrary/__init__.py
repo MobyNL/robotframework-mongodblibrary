@@ -1,7 +1,14 @@
+from importlib.metadata import PackageNotFoundError, version
+
 from robotlibcore import DynamicCore
 
 from .connection_pool import ConnectionManager
 from .keywords import MongoDBKeywords
+
+try:
+    __version__ = version("robotframework-mongodb")
+except PackageNotFoundError:  # running from a source tree that was never installed
+    __version__ = "unknown"
 
 
 class MongoDBLibrary(DynamicCore):
@@ -173,6 +180,8 @@ class MongoDBLibrary(DynamicCore):
 
     """
     ROBOT_LIBRARY_SCOPE = 'GLOBAL'
+    # Read from the installed package so the version lives in pyproject.toml only.
+    ROBOT_LIBRARY_VERSION = __version__
 
     def __init__(self, coerce_object_ids: bool = True) -> None:
         """Initializes the MongoDB Library.
