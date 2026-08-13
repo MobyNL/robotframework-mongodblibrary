@@ -16,7 +16,7 @@ every keyword, its arguments and examples.
 - Retrying assertions on a query result, a document count, a set of values, or the
   existence of a document, a collection or an index
 - `Run Database Command` for everything the keywords do not wrap
-- Designed for use in Robot Framework test suites
+- Runs on Robot Framework 5.0 through 7.x, from one code path
 
 ## Installation
 
@@ -29,6 +29,19 @@ Or with Poetry:
 ```bash
 poetry add robotframework-mongodb
 ```
+
+## Requirements
+
+| | Supported |
+|---|---|
+| Robot Framework | 5.0 – 7.x |
+| Python | 3.10 – 3.14 |
+| MongoDB | any version pymongo 4 speaks to (3.6 and later) |
+
+Everything in the supported range is exercised in CI, not merely allowed by the version
+constraint. If you are on an older Robot Framework, read
+[Older Robot Framework Versions](#older-robot-framework-versions) — one keyword argument
+behaves differently and the rest is identical.
 
 ## Usage Example
 
@@ -53,6 +66,10 @@ A secret can only come from the environment — Robot Framework refuses to build
 a literal, so the value cannot be written into the suite by accident. It is not
 encryption: the value is plain text in memory and is sent to MongoDB as typed. What it
 prevents is Robot Framework recording the argument.
+
+On Robot Framework 5.0 through 7.3 there is no `Secret` type, so both arguments take a
+plain string and nothing above applies. Nothing else differs; see
+[Older Robot Framework Versions](#older-robot-framework-versions).
 
 ```robotframework
 *** Settings ***
@@ -208,6 +225,71 @@ Read A Query Plan
 Transactions and sessions, change streams, GridFS and client-side field level encryption
 are deliberately not wrapped, because none of them fit a synchronous keyword taken one at
 a time. Use pymongo directly if a suite needs those.
+
+## Older Robot Framework Versions
+
+The library supports Robot Framework 5.0 and later from a single code path — there is no
+separate release or compatibility shim to install. Installing it alongside an older Robot
+Framework is enough:
+
+```bash
+pip install robotframework-mongodb "robotframework==6.1.1"
+```
+
+The one dependency that needs pairing is the assertion engine, which backs the retrying
+assertion keywords. Its 3.x line requires Robot Framework 6.1.1, so on 5.0 through 6.0
+pip needs to be told to take 2.x:
+
+```bash
+pip install robotframework-mongodb "robotframework==5.0.1" "robotframework-assertion-engine==2.0.0"
+```
+
+`verify_assertion` and `AssertionOperator` are the same in both lines, so every assertion
+keyword — the operators it accepts, the retrying, the failure messages — behaves the same
+either way.
+
+### What differs on an older version
+
+Only one thing: `Secret`. On 7.4 and later, `db_password` and `db_conn_string` accept
+one, and the value is logged as `<secret>`. Below 7.4 the type does not exist, Robot
+Framework has no syntax to build one, and both arguments take a plain string — which is
+how they worked before 7.4 anyway. The library imports `Secret` conditionally and builds
+the argument's type from what is available, so nothing raises and nothing needs a
+version check in your suite.
+
+Everything else is unaffected. The rest of what the library imports from `robot`
+(`logger`, the `@keyword` decorator, `BuiltIn`, `DotDict`, `timestr_to_secs`) long
+predates 5.0, and the keyword signatures use annotations 5.0 already converts.
+
+### Robot Framework 4 and older
+
+Not supported, for two reasons that are not worth working around:
+
+- The assertion engine will not install below Robot Framework 5, so the assertion
+  keywords would have to be reimplemented.
+- Robot Framework 4 does not convert built-in generic annotations such as `list[str]` and
+  `dict[str, Any]` — that arrived in 5.0 — so arguments would reach keywords as strings.
+  Every signature in the library would need rewriting to `typing.List` and `typing.Dict`.
+
+### How the range is tested
+
+CI runs the unit tests and generates the keyword documentation against Robot Framework
+5.0.1, 6.1.1, 7.3.2 and 7.4.0 — the floor, the version where the assertion engine changes
+line, and both sides of the `Secret` branch. Libdoc is included because it reads every
+signature and docstring, so it catches an annotation an older version cannot convert,
+which the unit tests would not notice.
+
+A further nightly job installs whatever Robot Framework and assertion engine are newest on
+PyPI, ignoring the upper bounds in `pyproject.toml`. Every other job installs a pinned
+version, so none of them would ever see a release made after the last commit; this one
+means a new version that breaks the library shows up here rather than in your suite.
+
+The acceptance suites in `atest/` are not part of that: they use `VAR`, which is 7.0
+syntax, and the repository's formatter rewrites variable assignments into it, so they run
+only on the newest Robot Framework. This affects contributors, not users. What those
+suites cover beyond the unit tests is the driver talking to a real MongoDB server, which
+does not vary by Robot Framework version; what does vary — argument conversion, keyword
+discovery, libdoc — is covered across the whole range.
 
 ## License
 MIT

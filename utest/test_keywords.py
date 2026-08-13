@@ -197,9 +197,19 @@ def test_srv_and_tls_are_converted_from_robot_arguments():
 # Robot Framework Secret credentials
 # --------------------------------------------------------------------------- #
 
-secret = pytest.importorskip("robot.api.types", reason="Secret needs Robot Framework 7.4").Secret
+# Imported rather than `importorskip`ed: that raises Skipped at module level on Robot
+# Framework 7.3 and older, which skips the whole file — every test in it, not just the
+# ones below — and reports it as one skip. The floor of the supported range is tested in
+# CI, so the file has to keep running there.
+try:  # Robot Framework 7.4 and later
+    from robot.api.types import Secret as secret
+except ImportError:
+    secret = None
+
+needs_secret = pytest.mark.skipif(secret is None, reason="Secret needs Robot Framework 7.4")
 
 
+@needs_secret
 def test_a_secret_password_reaches_the_driver_as_text(mongo_keywords, mocker):
     """The point of Secret is hiding the value from the log, not from pymongo."""
     client_class = mocker.patch("MongoDBLibrary.keywords.MongoClient", return_value=mocker.MagicMock())
@@ -217,6 +227,7 @@ def test_a_plain_password_still_works(mongo_keywords, mocker):
     assert client_class.call_args.kwargs["password"] == "hunter2"
 
 
+@needs_secret
 def test_a_secret_connection_string_reaches_the_driver_as_text(mongo_keywords, mocker):
     client_class = mocker.patch("MongoDBLibrary.keywords.MongoClient", return_value=mocker.MagicMock())
 
@@ -227,6 +238,7 @@ def test_a_secret_connection_string_reaches_the_driver_as_text(mongo_keywords, m
     assert client_class.call_args.args == ("mongodb://localhost:27017",)
 
 
+@needs_secret
 def test_two_aliases_with_equal_secrets_share_one_client(mongo_keywords, two_clients):
     """Regression guard: two Secret objects holding the same password are still two
     objects. Keying the client cache on the wrapper rather than the value would make
@@ -241,6 +253,7 @@ def test_two_aliases_with_equal_secrets_share_one_client(mongo_keywords, two_cli
     assert pool["a"].client is pool["b"].client
 
 
+@needs_secret
 def test_a_secret_and_an_equal_plain_password_share_one_client(mongo_keywords, two_clients):
     """The same credential is the same connection however the suite chose to write it."""
     factory, _ = two_clients
@@ -251,6 +264,7 @@ def test_a_secret_and_an_equal_plain_password_share_one_client(mongo_keywords, t
     assert factory.call_count == 1
 
 
+@needs_secret
 def test_different_secrets_do_not_share_a_client(mongo_keywords, two_clients):
     factory, _ = two_clients
 
@@ -260,6 +274,7 @@ def test_different_secrets_do_not_share_a_client(mongo_keywords, two_clients):
     assert factory.call_count == 2
 
 
+@needs_secret
 @pytest.mark.parametrize(
     "keyword_name, argument",
     [
@@ -278,6 +293,7 @@ def test_robot_framework_accepts_a_secret_for_the_credential(keyword_name, argum
     assert dict(named)[argument] is value
 
 
+@needs_secret
 def test_a_secret_does_not_disclose_itself_when_logged():
     """Robot Framework logs the object, so its string form is what a suite would leak."""
     assert str(secret("hunter2")) == "<secret>"

@@ -37,6 +37,12 @@ class MongoDBLibrary(DynamicCore):
     It supports various database operations such as connecting to a database,
     inserting, updating, deleting, and querying documents.
 
+    Robot Framework 5.0 and later are supported, on Python 3.10 and later. The only
+    keyword behaviour that differs by version is the ``Secret`` credential described
+    under `Credentials`, which needs Robot Framework 7.4. On 5.0 through 6.0, install
+    ``robotframework-assertion-engine`` 2.x — its 3.x line requires Robot Framework
+    6.1.1, and the assertion keywords behave the same on both.
+
     == Usage ==
 
     Example:
@@ -189,7 +195,8 @@ class MongoDBLibrary(DynamicCore):
 
     === Without secrets ===
 
-    On Robot Framework 7.3, and anywhere a ``Secret`` is inconvenient, pass credentials
+    On Robot Framework 7.3 and older, where the type does not exist, and anywhere a
+    ``Secret`` is inconvenient, pass credentials
     as ordinary variables supplied from a resource file that is not committed, from the
     command line, or from the environment. The argument is still written to the log as
     the variable name rather than its value, as long as the value is not written

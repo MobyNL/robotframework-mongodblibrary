@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13", "3.14"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v7
 
@@ -42,6 +42,114 @@ jobs:
       - name: Unit tests
         run: poetry run pytest utest --cov=MongoDBLibrary --cov-report=term-missing
 
+  # `poetry install` resolves the newest Robot Framework the constraint allows, so no job
+  # above ever runs against the oldest supported one. These do, which is what makes the
+  # range in pyproject.toml a tested claim rather than an assertion. Installed with pip
+  # from explicit pins, deliberately ignoring poetry.lock: the lock exists to pin the
+  # development environment, and its whole purpose is to hold one version.
+  #
+  # Only the unit tests run here. The acceptance suites use VAR, which is Robot Framework
+  # 7.0 syntax, and the repository's own formatter rewrites assignments into it, so they
+  # cannot run on the older versions. What they cover that the unit tests do not is the
+  # driver talking to a real server, which does not vary by Robot Framework version;
+  # what does vary is argument conversion, keyword discovery and libdoc, all of which
+  # are covered below.
+  unit-test-robot-framework-range:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The floor. 5.0 is the first version that converts built-in generics
+          # (`list[str]`), and the assertion engine will not install below it.
+          - robotframework: "5.0.1"
+            assertion_engine: "2.0.0"
+            python-version: "3.10"
+          # 6.1.1 is where the assertion engine moves to 3.x.
+          - robotframework: "6.1.1"
+            assertion_engine: "3.0.3"
+            python-version: "3.10"
+          # The last version without `Secret`, so the fallback import path is exercised
+          # against the version it exists for.
+          - robotframework: "7.3.2"
+            assertion_engine: "3.0.3"
+            python-version: "3.12"
+          # The first version with `Secret`, which is the other side of that branch. The
+          # newest 7.4 is covered by the jobs that install from poetry.lock, but only for
+          # as long as the lock happens to point at it, and the lock does not distinguish
+          # 7.4.0 from a later patch.
+          - robotframework: "7.4.0"
+            assertion_engine: "3.0.3"
+            python-version: "3.12"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install with pinned Robot Framework
+        run: |
+          python -m pip install --upgrade pip
+          pip install . pytest pytest-mock mongomock \
+            "robotframework==${{ matrix.robotframework }}" \
+            "robotframework-assertion-engine==${{ matrix.assertion_engine }}"
+
+      - name: Report the resolved versions
+        run: pip list | grep -E "robotframework|pymongo|mongodb"
+
+      - name: Unit tests
+        run: pytest utest
+
+      - name: Import the library and generate its documentation
+        # Libdoc reads every signature and docstring, so it fails on an annotation the
+        # version cannot convert or a documentation construct it cannot parse — neither of
+        # which the unit tests would notice.
+        run: python -m robot.libdoc MongoDBLibrary libdoc-check.html
+
+  # The other end of the range: whatever Robot Framework, assertion engine and
+  # pythonlibcore are newest on PyPI right now, ignoring both poetry.lock and the upper
+  # bounds in pyproject.toml. Those pins are what stop every other job from ever seeing a
+  # release made after this commit, so without this job a version that breaks the library
+  # is found by a user rather than by CI.
+  #
+  # Deliberately not on pull requests, and `continue-on-error`, because it can go red for
+  # a reason that has nothing to do with the change being tested — an upstream release an
+  # hour ago. The nightly schedule is what makes it useful: a red run here means the next
+  # release needs either a fix or a narrower upper bound, and the run log says which
+  # version caused it.
+  unit-test-robot-framework-latest:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+
+      - name: Install, then upgrade past the declared upper bounds
+        # --no-deps on the upgrade: the point is to install a version pyproject.toml
+        # excludes, and without it pip re-resolves and pulls the capped version back.
+        run: |
+          python -m pip install --upgrade pip
+          pip install . pytest pytest-mock mongomock
+          pip install --upgrade --no-deps \
+            robotframework robotframework-assertion-engine robotframework-pythonlibcore
+
+      - name: Report the resolved versions
+        # Read this first when the job is red: it names the version that broke.
+        run: pip list | grep -E "robotframework|pymongo|mongodb"
+
+      - name: Unit tests
+        run: pytest utest
+
+      - name: Import the library and generate its documentation
+        run: python -m robot.libdoc MongoDBLibrary libdoc-check.html
+
+  # Runs on the development environment's Robot Framework, which is the newest supported.
+  # The suites use 7.0 syntax; see unit-test-robot-framework-range for why that is fine.
   acceptance-test:
     runs-on: ubuntu-latest
     services:
