@@ -5,11 +5,20 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.0] - Unreleased
+## [1.0.0] - 2026-08-13
+
+The first release the version number claims is stable. It collects the work previously
+staged as 0.3.0, which was never published, and completes the keyword surface: the
+library now covers the parts of pymongo a test suite actually reaches for, rather than
+documents alone.
 
 The fixes in this release change behaviour that previously failed silently, so suites
 that appeared to pass may start reporting real failures. That is the point of the
 release: read "Fixed" before upgrading.
+
+Nothing that worked before has been removed or renamed, and every new argument defaults
+to the previous behaviour, so upgrading from 0.2.2 needs no changes to a suite beyond
+those the fixes force.
 
 ### Fixed
 
@@ -72,6 +81,41 @@ release: read "Fixed" before upgrading.
 - `coerce_object_ids` import argument, for collections whose `_id` values are genuinely
   strings that happen to be 24 hexadecimal characters, such as a truncated hash. With
   it off, queries are passed through exactly as written.
+- `Get Distinct Values`, returning each value a field takes across the matching
+  documents. Asking which statuses a collection contains previously meant writing an
+  aggregation pipeline.
+- `Replace Document`, which swaps a whole document rather than merging fields into it.
+  `Update Document` can only add or overwrite, so until now there was no way to make a
+  field disappear.
+- `upsert` argument on `Update Document`, `Update Document With Operators`,
+  `Update Documents` and `Update Documents With Operators`. "Ensure this document exists
+  with these values" was previously impossible to express, so fixture setup could not be
+  written to run twice. Note that an upserted document is inserted rather than changed,
+  so the two bulk keywords still report 0 and log the new id.
+- `Delete Document And Return It`, which deletes and reads in one operation. Doing it as
+  a find followed by a delete leaves a window in which the document can change, and
+  cannot safely drain a queue collection.
+- `Drop Collection`, `Create Collection` and `List Collections`.
+  `Delete All Documents From Collection` empties a collection but leaves its indexes and
+  options behind, so a unique index created by one test still rejected the next one's
+  fixtures. `Create Collection` takes the options an implicit creation cannot supply:
+  `capped`, `validator`, `timeseries`.
+- `List Databases`, `Drop Database` and `Get Server Info`, the last of these for skipping
+  a test the server is too old to support.
+- `Run Database Command`, which reaches every command the library does not wrap:
+  `collStats`, `dbStats`, `explain`, `listCollections` and the administrative commands.
+- `Get Index Information` and `Drop All Indexes`, and `sparse`, `expire_after_seconds`
+  and `partial_filter_expression` arguments on `Create Index`.
+- `Check Distinct Values`, `Check Collection Exists`, `Check Index Exists`,
+  `Document Should Exist` and `Document Should Not Exist`. All retry like the existing
+  assertion keywords, which is the part a suite gets wrong when it hand-rolls the wait.
+- `limit` and `skip` arguments on `Count Documents` and `Count Documents With Query`,
+  `ordered` on `Insert Documents`, `allow_disk_use` on `Execute Query`, and
+  `Get Estimated Document Count`.
+- `replica_set`, `direct_connection`, `read_preference` and `auth_mechanism` arguments on
+  `Connect To Database`. These were previously reachable only by writing a connection
+  string, which meant a suite could not use a host and credentials and still read from a
+  secondary. `auth_mechanism` is what the documented AWS path needs.
 
 ### Changed
 
@@ -110,6 +154,41 @@ release: read "Fixed" before upgrading.
   the broken code.
 - New acceptance suite `atest/multi_connection_tests.robot` covering switching
   connections, non-string query values, the retry timeout and releasing the pool.
+- New acceptance suite `atest/collection_and_database_tests.robot` for the keywords that
+  act on a collection, a database or the server. These need a real server: collection
+  options, index metadata and database commands are all things an in-memory stand-in
+  either refuses or invents. It caught `Run Database Command` sending a command document
+  as a command name, which every mock-based test had accepted.
+- New acceptance suite `atest/query_operator_tests.robot`. The keywords whose whole
+  purpose is MongoDB query and update operators — the `*With Query` family, the bulk
+  updates, sorting, and ObjectId coercion inside `$in` — had no acceptance coverage at
+  all, so `$gte`, `$in`, `$regex`, `$inc` and `$push` were only ever answered by
+  mongomock's reimplementation of the query language rather than by MongoDB.
+- New acceptance suite `atest/connection_option_tests.robot` covering `auth_source`,
+  `auth_mechanism`, `read_preference`, `direct_connection` and `server_selection_timeout`
+  against a real server. Each becomes a pymongo option under a different name from the
+  keyword argument, and only a server accepting the connection proves the mapping.
+- CI's acceptance job now runs against `mongodb/mongodb-atlas-local` rather than plain
+  `mongo:8`. It is a single-node replica set, which is what a hosted cluster is, so read
+  preferences and `replica_set` are exercised against a topology that has them instead of
+  a standalone that ignores them. It needs `--hostname localhost`: a replica set
+  advertises its members by hostname, and left as the container id that name does not
+  resolve from the runner, so every connection that is not `directConnection` fails
+  server selection.
+- A second CI job runs the connection suite against a real hosted cluster, on pushes to
+  `main`, nightly and on demand, covering `srv` and `tls` — a DNS seed list and a TLS
+  handshake being the two things no container offers. It works in a database named after
+  the run and drops it afterwards, and admits itself to the Atlas access list for the
+  length of the job rather than leaving the cluster open. It skips cleanly where the
+  secrets are absent, so a fork is unaffected.
+- `${DB_REPLICA_SET}` and `${DB_AUTH_MECHANISM}` in `local.resource`. Both are properties
+  of the server and of how its user was created rather than of the library, and the tests
+  that need them skip when they are not set. A user holding only SCRAM-SHA-1 credentials
+  rejects `SCRAM-SHA-256` with `bad auth`, which is what a hosted cluster's user often is.
+- Acceptance coverage of `MongoDBLibrary/keywords.py` rose from 80% to 97% against the
+  container, and 99% counting the hosted-cluster job. The one remaining statement is a
+  guard in `Execute Query` that Robot Framework's own argument conversion reaches first,
+  leaving it reachable only from Python, where the unit tests cover it.
 - CI runs `ruff`, `robocop`, `mypy` and the unit tests on Python 3.12, 3.13 and 3.14,
   plus the acceptance tests against a MongoDB service container.
 - A tag-triggered release workflow publishes to PyPI and refuses to run if the tag does
