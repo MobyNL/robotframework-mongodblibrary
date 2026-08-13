@@ -6,9 +6,13 @@ MongoDBLibrary is a test library for [Robot Framework](https://robotframework.or
 - Connect to a single host, a connection string, or a hosted cluster such as MongoDB Atlas
 - Named connections with a connection pool, and clients shared between aliases
 - CRUD on one or many documents, with MongoDB query and update operators
-- Queries with projection, sorting, limiting and skipping
-- Index creation, listing and dropping
-- Retrying assertions on a query result or a document count
+- Queries with projection, sorting, limiting, skipping and distinct values
+- Upserting and whole-document replacement, so a fixture step can run twice
+- Collection and database management: create, drop, list
+- Index creation, listing and dropping, including unique, sparse and TTL indexes
+- Retrying assertions on a query result, a document count, a set of values, or the
+  existence of a document, a collection or an index
+- `Run Database Command` for everything the keywords do not wrap
 - Designed for use in Robot Framework test suites
 
 ## Installation
@@ -44,6 +48,41 @@ Connect With A Connection String
     Connect To Database Using Connection String    db_conn_string=${DB_CONNECT_STRING}    db_name=mydb
     ${count}               Count Documents    collection_name=mycollection    key=value
     [Teardown]             Disconnect From Database
+```
+
+## Resetting Between Tests
+
+`Delete All Documents From Collection` removes the documents but leaves everything
+*defined* on the collection — its indexes and options. So a unique index created by one
+test still rejects the next test's fixtures. `Drop Collection` removes the collection
+itself, which is what actually resets it, and succeeds when the collection is not there:
+
+```robotframework
+*** Test Cases ***
+Reset The Collection Completely
+    [Teardown]    Drop Collection    collection_name=orders
+```
+
+To write a setup step that can run twice, upsert rather than insert:
+
+```robotframework
+*** Keywords ***
+Ensure The Test User Exists
+    Update Document    collection_name=users    query={"email": "a@example.test"}
+    ...                update={"active": ${True}}    upsert=${True}
+```
+
+## Waiting For Data
+
+The assertion keywords retry, which is the part a suite gets wrong when it hand-rolls
+the wait around `Find Document`:
+
+```robotframework
+*** Test Cases ***
+Wait For The Order To Be Written
+    Document Should Exist    collection_name=orders    order_id=A-1    retry_timeout=10 seconds
+    Check Distinct Values    collection_name=orders    field=status
+    ...                      assertion_operator=not contains    expected_value=pending
 ```
 
 ## Document Ids
@@ -130,6 +169,23 @@ Connect To AWS DocumentDB
     Connect To Database Using Connection String
     ...    db_conn_string=${DB_CONNECT_STRING}    db_name=mydb
 ```
+
+## Beyond These Keywords
+
+The keywords cover what a suite normally needs. `Run Database Command` reaches
+everything else — server statistics, storage sizes, query plans and administrative
+commands are all database commands:
+
+```robotframework
+*** Test Cases ***
+Read A Query Plan
+    ${plan}    Run Database Command
+    ...        command={"explain": {"find": "orders", "filter": {"status": "new"}}}
+```
+
+Transactions and sessions, change streams, GridFS and client-side field level encryption
+are deliberately not wrapped, because none of them fit a synchronous keyword taken one at
+a time. Use pymongo directly if a suite needs those.
 
 ## License
 MIT

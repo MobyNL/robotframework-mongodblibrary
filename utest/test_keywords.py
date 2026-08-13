@@ -193,6 +193,45 @@ def test_srv_and_tls_are_converted_from_robot_arguments():
     assert named == [("srv", True), ("tls", False)]
 
 
+@pytest.mark.parametrize(
+    "argument, value, option",
+    [
+        param("auth_mechanism", "MONGODB-AWS", "authMechanism", id="auth_mechanism"),
+        param("replica_set", "rs0", "replicaSet", id="replica_set"),
+        param("read_preference", "secondaryPreferred", "readPreference", id="read_preference"),
+        param("direct_connection", True, "directConnection", id="direct_connection"),
+    ],
+)
+def test_connect_to_database_passes_its_topology_options(mongo_keywords, mocker, argument, value, option):
+    """Each is spelled as pymongo's URI option name, not the keyword's argument name."""
+    client_class = mocker.patch("MongoDBLibrary.keywords.MongoClient", return_value=mocker.MagicMock())
+
+    mongo_keywords.connect_to_database(db_name="test_db", db_host="localhost", **{argument: value})
+
+    assert client_class.call_args.kwargs[option] == value
+
+
+def test_direct_connection_can_be_forced_off(mongo_keywords, mocker):
+    """False is a real setting here, so it must not be dropped as though it were unset."""
+    client_class = mocker.patch("MongoDBLibrary.keywords.MongoClient", return_value=mocker.MagicMock())
+
+    mongo_keywords.connect_to_database(db_name="test_db", db_host="localhost", direct_connection=False)
+
+    assert client_class.call_args.kwargs["directConnection"] is False
+
+
+def test_topology_options_take_part_in_the_client_cache_key(mongo_keywords, two_clients):
+    """Two aliases wanting different read preferences must not share one client."""
+    factory, _ = two_clients
+
+    mongo_keywords.connect_to_database(db_name="db", db_host="localhost", alias="a")
+    mongo_keywords.connect_to_database(
+        db_name="db", db_host="localhost", alias="b", read_preference="secondaryPreferred"
+    )
+
+    assert factory.call_count == 2
+
+
 # --------------------------------------------------------------------------- #
 # Client reuse
 # --------------------------------------------------------------------------- #
@@ -654,3 +693,220 @@ def test_check_query_result_honours_retry_timeout(mongo):
             "mycollection", {"key": "value"}, AssertionOperator.equal, 42, "field",
             retry_timeout="100 milliseconds", retry_pause="0 seconds",
         )
+
+
+# --------------------------------------------------------------------------- #
+# Distinct value assertions
+# --------------------------------------------------------------------------- #
+
+@pytest.fixture
+def orders(mongo):
+    """Three orders, two of them new."""
+    mongo.insert_documents(
+        "orders",
+        [
+            {"status": "new", "region": "eu"},
+            {"status": "new", "region": "us"},
+            {"status": "shipped", "region": "eu"},
+        ],
+    )
+    return mongo
+
+
+def test_check_distinct_values(orders):
+    orders.check_distinct_values("orders", "status", AssertionOperator.equal, ["new", "shipped"])
+
+
+def test_check_distinct_values_sorts_before_comparing(mongo_keywords, mock_db):
+    """MongoDB does not define the order, so an expected list has to mean a set."""
+    mock_db.__getitem__.return_value.distinct.return_value = ["shipped", "new"]
+
+    mongo_keywords.check_distinct_values("orders", "status", AssertionOperator.equal, ["new", "shipped"])
+
+
+def test_check_distinct_values_mismatch(orders):
+    with pytest.raises(AssertionError, match="Wrong distinct values for field 'status':"):
+        orders.check_distinct_values("orders", "status", AssertionOperator.equal, ["new"])
+
+
+def test_check_distinct_values_narrowed_by_a_query(orders):
+    orders.check_distinct_values(
+        "orders", "status", AssertionOperator.equal, ["new"], query={"region": "us"}
+    )
+
+
+def test_check_distinct_values_can_assert_a_value_is_absent(orders):
+    """The question counting cannot express: nothing is left in this state."""
+    orders.check_distinct_values("orders", "status", AssertionOperator.contains, "new")
+
+    with pytest.raises(AssertionError):
+        orders.check_distinct_values("orders", "status", AssertionOperator.contains, "pending")
+
+
+def test_check_distinct_values_honours_retry_timeout(mongo):
+    with pytest.raises(AssertionError, match="Wrong distinct values"):
+        mongo.check_distinct_values(
+            "orders", "status", AssertionOperator.equal, ["new"],
+            retry_timeout="100 milliseconds", retry_pause="0 seconds",
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Existence assertions
+# --------------------------------------------------------------------------- #
+
+def test_check_collection_exists(mongo):
+    mongo.insert_document("orders", {"key": "value"})
+
+    mongo.check_collection_exists("orders")
+
+
+def test_check_collection_exists_reports_what_is_there(mongo):
+    mongo.insert_document("orders", {"key": "value"})
+
+    with pytest.raises(AssertionError, match=r"Collection 'absent' does not exist.*\['orders'\]"):
+        mongo.check_collection_exists("absent")
+
+
+def test_check_collection_exists_takes_a_custom_message(mongo):
+    with pytest.raises(AssertionError, match="the migration did not run"):
+        mongo.check_collection_exists("absent", assertion_message="the migration did not run")
+
+
+def test_check_collection_exists_retries(mongo_keywords, mock_db):
+    mock_db.list_collection_names.side_effect = [[], [], ["orders"]]
+
+    mongo_keywords.check_collection_exists(
+        "orders", retry_timeout="5 seconds", retry_pause="1 millisecond"
+    )
+
+    assert mock_db.list_collection_names.call_count == 3
+
+
+def test_check_collection_exists_honours_retry_timeout(mongo):
+    with pytest.raises(AssertionError, match="Collection 'absent' does not exist"):
+        mongo.check_collection_exists(
+            "absent", retry_timeout="100 milliseconds", retry_pause="0 seconds"
+        )
+
+
+def test_check_index_exists(mongo):
+    mongo.insert_document("users", {"email": "a@example.test"})
+    mongo.create_index("users", {"email": 1}, index_name="by_email")
+
+    mongo.check_index_exists("users", "by_email")
+
+
+def test_check_index_exists_reports_what_is_there(mongo):
+    mongo.insert_document("users", {"email": "a@example.test"})
+
+    with pytest.raises(AssertionError, match=r"Index 'by_email' does not exist.*\['_id_'\]"):
+        mongo.check_index_exists("users", "by_email")
+
+
+def test_check_index_exists_honours_retry_timeout(mongo):
+    mongo.insert_document("users", {"email": "a@example.test"})
+
+    with pytest.raises(AssertionError, match="Index 'by_email' does not exist"):
+        mongo.check_index_exists(
+            "users", "by_email", retry_timeout="100 milliseconds", retry_pause="0 seconds"
+        )
+
+
+def test_document_should_exist(mongo):
+    mongo.insert_document("orders", {"order_id": "A-1"})
+
+    mongo.document_should_exist("orders", order_id="A-1")
+
+
+def test_document_should_exist_fails_with_the_query_in_the_message(mongo):
+    with pytest.raises(AssertionError, match="No document in 'orders' matches"):
+        mongo.document_should_exist("orders", order_id="A-1")
+
+
+def test_document_should_exist_takes_a_custom_message(mongo):
+    with pytest.raises(AssertionError, match="the order was never placed"):
+        mongo.document_should_exist(
+            "orders", assertion_message="the order was never placed", order_id="A-1"
+        )
+
+
+def test_document_should_exist_finds_its_target_by_string_id(mongo):
+    doc_id = mongo.insert_document("orders", {"order_id": "A-1"})
+
+    mongo.document_should_exist("orders", _id=str(doc_id))
+
+
+def test_document_should_exist_retries(mongo_keywords, mock_db):
+    mock_db.__getitem__.return_value.count_documents.side_effect = [0, 0, 1]
+
+    mongo_keywords.document_should_exist(
+        "orders", retry_timeout="5 seconds", retry_pause="1 millisecond", order_id="A-1"
+    )
+
+    assert mock_db.__getitem__.return_value.count_documents.call_count == 3
+
+
+def test_document_should_exist_honours_retry_timeout(mongo):
+    with pytest.raises(AssertionError, match="No document in 'orders' matches"):
+        mongo.document_should_exist(
+            "orders", retry_timeout="100 milliseconds", retry_pause="0 seconds", order_id="A-1"
+        )
+
+
+def test_document_should_not_exist(mongo):
+    mongo.document_should_not_exist("orders", order_id="A-1")
+
+
+def test_document_should_not_exist_reports_how_many_it_found(mongo):
+    mongo.insert_documents("orders", [{"status": "pending"}, {"status": "pending"}])
+
+    with pytest.raises(AssertionError, match="but found 2"):
+        mongo.document_should_not_exist("orders", status="pending")
+
+
+def test_document_should_not_exist_retries_until_the_document_goes(mongo_keywords, mock_db):
+    mock_db.__getitem__.return_value.count_documents.side_effect = [1, 1, 0]
+
+    mongo_keywords.document_should_not_exist(
+        "orders", retry_timeout="5 seconds", retry_pause="1 millisecond", status="pending"
+    )
+
+    assert mock_db.__getitem__.return_value.count_documents.call_count == 3
+
+
+def test_document_should_not_exist_honours_retry_timeout(mongo):
+    mongo.insert_document("orders", {"status": "pending"})
+
+    with pytest.raises(AssertionError, match="Expected no document"):
+        mongo.document_should_not_exist(
+            "orders", retry_timeout="100 milliseconds", retry_pause="0 seconds", status="pending"
+        )
+
+
+@pytest.mark.parametrize(
+    "keyword_name",
+    ["document_should_exist", "document_should_not_exist"],
+)
+def test_existence_assertions_keep_their_query_argument_types(keyword_name):
+    """Free query arguments must not be coerced to strings, as the delete ones once were."""
+    spec = PythonArgumentParser(keyword_name).parse(getattr(MongoDBKeywords, keyword_name))
+
+    _, named = spec.convert(["mycollection"], [("count", 5), ("active", True)])
+
+    assert named == [("count", 5), ("active", True)]
+
+
+@pytest.mark.parametrize(
+    "keyword_name, args, kwargs",
+    [
+        param("check_distinct_values", ("orders", "status", AssertionOperator.equal, []), {}, id="check_distinct"),
+        param("check_collection_exists", ("orders",), {}, id="check_collection_exists"),
+        param("check_index_exists", ("orders", "by_email"), {}, id="check_index_exists"),
+        param("document_should_exist", ("orders",), {"key": "value"}, id="document_should_exist"),
+        param("document_should_not_exist", ("orders",), {"key": "value"}, id="document_should_not_exist"),
+    ],
+)
+def test_missing_alias_raises_the_same_error_for_assertions(mongo_keywords, keyword_name, args, kwargs):
+    with pytest.raises(KeyError, match="Alias 'missing_alias' not found in connection pool."):
+        getattr(mongo_keywords, keyword_name)(*args, alias="missing_alias", **kwargs)
