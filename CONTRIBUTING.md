@@ -162,6 +162,16 @@ documentation changes:
 poetry run libdoc MongoDBLibrary MongoDBLibraryKeywords.html
 ```
 
+GitHub Pages serves that file from `main` at
+<https://mobynl.github.io/robotframework-mongodblibrary/>, so a merged change to it is
+published immediately. Two files at the repository root keep that working, and both need
+to stay:
+
+- `.nojekyll` — the generated documentation contains 175 `{{ ... }}` sequences in its
+  JavaScript, which Jekyll would read as template tags and strip. Without this file the
+  published page is quietly broken while the committed one looks fine.
+- `index.html` — a redirect, because the site root would otherwise have nothing to serve.
+
 ## Submitting Changes
 
 1. **Create a Branch**: Create a new branch for your changes.

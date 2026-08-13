@@ -2,6 +2,9 @@
 
 MongoDBLibrary is a test library for [Robot Framework](https://robotframework.org/) that provides keywords for interacting with MongoDB databases.
 
+📖 **[Keyword documentation](https://mobynl.github.io/robotframework-mongodblibrary/)** —
+every keyword, its arguments and examples.
+
 ## Features
 - Connect to a single host, a connection string, or a hosted cluster such as MongoDB Atlas
 - Named connections with a connection pool, and clients shared between aliases
@@ -117,7 +120,7 @@ Query An Id Explicitly
 ```
 
 Full details, including exactly what is and is not rewritten, are in the `Object Ids`
-section of the [keyword documentation](MongoDBLibraryKeywords.html).
+section of the [keyword documentation](https://mobynl.github.io/robotframework-mongodblibrary/).
 
 ## Connecting To A Hosted Cluster (MongoDB Atlas)
 
