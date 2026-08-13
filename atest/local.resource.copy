@@ -8,3 +8,13 @@ ${DB_PORT}              ${EMPTY}
 # Set to ${True} for a hosted cluster such as MongoDB Atlas, whose cluster name is a
 # DNS seed list rather than a single host. Leave ${False} for a plain host and port.
 ${DB_SRV}               ${False}
+# Name of the replica set, when the server is one and it can be reached by name. Leave
+# empty for a standalone server; the test that needs it skips itself. The Atlas Local
+# image used by CI is a single-node replica set called rs-localdev.
+${DB_REPLICA_SET}       ${EMPTY}
+# Authentication mechanism this server's user actually holds credentials for. This is a
+# property of how the user was created, not of the server version: a user created with
+# only SCRAM-SHA-1 rejects SCRAM-SHA-256 with "bad auth". Leave empty to let the driver
+# negotiate; the test that pins a mechanism skips itself. The CI container user is
+# SCRAM-SHA-256; an Atlas user created some time ago is often SCRAM-SHA-1.
+${DB_AUTH_MECHANISM}    ${EMPTY}

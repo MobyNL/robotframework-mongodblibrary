@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Nightly, so a change at the hosted end is found within a day rather than at the
+    # next release.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
 
 jobs:
   lint-and-unit-test:
@@ -41,12 +46,21 @@ jobs:
     runs-on: ubuntu-latest
     services:
       mongodb:
-        image: mongo:8
+        # Atlas Local rather than plain mongo: a single-node replica set, which is what a
+        # hosted cluster is, so read preferences and the replica set name are exercised
+        # against a topology that has them instead of a standalone that ignores them.
+        image: mongodb/mongodb-atlas-local:latest
         ports:
           - 27017:27017
         env:
-          MONGO_INITDB_ROOT_USERNAME: root
-          MONGO_INITDB_ROOT_PASSWORD: testpass
+          MONGODB_INITDB_ROOT_USERNAME: root
+          MONGODB_INITDB_ROOT_PASSWORD: testpass
+        # The set advertises its members by hostname. Left as the container id, that name
+        # does not resolve from the runner and every connection that is not
+        # directConnection fails server selection. Pinning it to localhost, with the port
+        # mapped unchanged, makes the advertised address one the runner can reach.
+        options: >-
+          --hostname localhost
     steps:
       - uses: actions/checkout@v4
 
@@ -71,7 +85,31 @@ jobs:
           ${DB_NAME}              rf_atest
           ${DB_PORT}              27017
           ${DB_SRV}               ${False}
+          ${DB_REPLICA_SET}       rs-localdev
+          ${DB_AUTH_MECHANISM}    SCRAM-SHA-256
           EOF
+
+      - name: Wait for the replica set to accept connections
+        # The image reports healthy once mongod answers, which is a moment before the set
+        # has a primary. Connecting without directConnection needs the primary, so waiting
+        # on server selection here fails with a clear message rather than inside a suite.
+        run: |
+          poetry run python - <<'PY'
+          import sys, time
+          from pymongo import MongoClient
+          deadline = time.time() + 60
+          while True:
+              try:
+                  client = MongoClient("mongodb://root:testpass@localhost:27017/?authSource=admin",
+                                       serverSelectionTimeoutMS=2000)
+                  client.admin.command("ping")
+                  print("replica set ready:", client.topology_description.topology_type_name)
+                  break
+              except Exception as error:
+                  if time.time() > deadline:
+                      sys.exit(f"replica set never became reachable: {error}")
+                  time.sleep(2)
+          PY
 
       - name: Acceptance tests
         run: poetry run robot --outputdir atest-results atest
@@ -82,3 +120,177 @@ jobs:
         with:
           name: atest-results
           path: atest-results/
+
+  # Only the connect keywords need a hosted cluster: `srv` resolves a DNS seed list and
+  # `tls` is the handshake a cluster requires, neither of which a container has. So this
+  # runs the connection suite alone rather than all of them — a minute of runner time
+  # instead of the whole acceptance run against a free cluster over the internet.
+  #
+  # Not on pull requests. Secrets are unavailable to a fork's PR, and every PR would
+  # otherwise depend on a live external service to go green.
+  acceptance-test-atlas:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    # One at a time: the runs share a cluster, and the access list endpoint rejects
+    # concurrent writes.
+    concurrency:
+      group: atlas-acceptance
+      cancel-in-progress: false
+    env:
+      ATLAS_API_BASE: https://cloud.mongodb.com/api/atlas/v2
+      ATLAS_API_ACCEPT: application/vnd.atlas.2023-01-01+json
+      # Which mechanism a user can use is a property of how that user was created. An
+      # Atlas user created some time ago holds SCRAM-SHA-1 credentials only and rejects
+      # SCRAM-SHA-256 with "bad auth". Override with the ATLAS_AUTH_MECHANISM variable
+      # if the cluster's user is different.
+      DB_AUTH_MECHANISM: ${{ vars.ATLAS_AUTH_MECHANISM || 'SCRAM-SHA-1' }}
+    steps:
+      - name: Check the Atlas secrets are configured
+        id: check
+        # Without them the job has nothing to connect to. Skipping keeps a fork, or a
+        # repository that has not set them up, from failing on something it cannot fix.
+        #
+        # The secrets arrive as environment variables rather than being interpolated into
+        # the script: the `secrets` context is not available in a step `if` at all, and a
+        # secret pasted into shell text would be parsed as shell.
+        env:
+          DB_HOST: ${{ secrets.ATLAS_DB_HOST }}
+          DB_USER: ${{ secrets.ATLAS_DB_USER }}
+          DB_PASSWORD: ${{ secrets.ATLAS_DB_PASSWORD }}
+          API_PUBLIC_KEY: ${{ secrets.ATLAS_API_PUBLIC_KEY }}
+          API_PRIVATE_KEY: ${{ secrets.ATLAS_API_PRIVATE_KEY }}
+          PROJECT_ID: ${{ secrets.ATLAS_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          if [ -n "${DB_HOST}" ] && [ -n "${DB_USER}" ] && [ -n "${DB_PASSWORD}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Atlas secrets are not configured, skipping the hosted cluster tests."
+          fi
+          if [ -n "${API_PUBLIC_KEY}" ] && [ -n "${API_PRIVATE_KEY}" ] && [ -n "${PROJECT_ID}" ]; then
+            echo "allowlist=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "allowlist=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No Atlas API key configured; assuming the access list already admits this runner."
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.check.outputs.configured == 'true'
+
+      - uses: actions/setup-python@v5
+        if: steps.check.outputs.configured == 'true'
+        with:
+          python-version: "3.12"
+
+      - name: Install Poetry
+        if: steps.check.outputs.configured == 'true'
+        run: pipx install poetry
+
+      - name: Install dependencies
+        if: steps.check.outputs.configured == 'true'
+        run: poetry install
+
+      - name: Allow this runner through the Atlas access list
+        id: allowlist
+        if: steps.check.outputs.configured == 'true' && steps.check.outputs.allowlist == 'true'
+        # A runner gets a different public address every run, and Atlas refuses anything
+        # not on the project's list. Adding just this address for the length of the job
+        # avoids leaving the cluster open to everything. deleteAfterDate is the failsafe:
+        # if the cleanup step never runs, Atlas expires the entry an hour from now.
+        #
+        # Needs an API key with Project Owner. There is no role covering the access list
+        # alone, so give the key a project holding nothing but the test cluster — or drop
+        # the API secrets entirely and open the access list by hand, and this step skips.
+        env:
+          API_PUBLIC_KEY: ${{ secrets.ATLAS_API_PUBLIC_KEY }}
+          API_PRIVATE_KEY: ${{ secrets.ATLAS_API_PRIVATE_KEY }}
+          PROJECT_ID: ${{ secrets.ATLAS_PROJECT_ID }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          RUNNER_IP="$(curl -fsS --retry 3 https://api.ipify.org)"
+          echo "runner_ip=${RUNNER_IP}" >> "$GITHUB_OUTPUT"
+          EXPIRES="$(date -u -d '+1 hour' +%Y-%m-%dT%H:%M:%SZ)"
+          curl -fsS --retry 3 -X POST \
+            --digest -u "${API_PUBLIC_KEY}:${API_PRIVATE_KEY}" \
+            -H "Accept: ${ATLAS_API_ACCEPT}" \
+            -H "Content-Type: application/json" \
+            "${ATLAS_API_BASE}/groups/${PROJECT_ID}/accessList" \
+            -d "[{\"ipAddress\": \"${RUNNER_IP}\", \"comment\": \"GitHub Actions run ${RUN_ID}\", \"deleteAfterDate\": \"${EXPIRES}\"}]" \
+            > /dev/null
+          echo "::notice::Added this runner to the Atlas access list until ${EXPIRES}."
+
+      - name: Write local.resource for the hosted cluster
+        if: steps.check.outputs.configured == 'true'
+        # A database of its own per run, so concurrent runs and anyone working against
+        # the same cluster never see each other's data. Atlas caps a database name at 38
+        # bytes, which this stays well inside.
+        env:
+          DB_HOST: ${{ secrets.ATLAS_DB_HOST }}
+          DB_USER: ${{ secrets.ATLAS_DB_USER }}
+          DB_PASSWORD: ${{ secrets.ATLAS_DB_PASSWORD }}
+        run: |
+          set -euo pipefail
+          DB_NAME="rf_ci_${{ github.run_id }}"
+          echo "DB_NAME=${DB_NAME}" >> "$GITHUB_ENV"
+          ENCODED_USER="$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote_plus(sys.argv[1]))' "$DB_USER")"
+          ENCODED_PASSWORD="$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote_plus(sys.argv[1]))' "$DB_PASSWORD")"
+          {
+            echo '*** Variables ***'
+            echo "\${DB_HOST}              ${DB_HOST}"
+            echo "\${DB_USER}              ${DB_USER}"
+            echo "\${DB_PASSWORD}          ${DB_PASSWORD}"
+            echo "\${DB_CONNECT_STRING}    mongodb+srv://${ENCODED_USER}:${ENCODED_PASSWORD}@${DB_HOST}/?appName=github-actions"
+            echo "\${DB_NAME}              ${DB_NAME}"
+            echo "\${DB_PORT}              \${EMPTY}"
+            echo "\${DB_SRV}               \${True}"
+            echo "\${DB_REPLICA_SET}       \${EMPTY}"
+            echo "\${DB_AUTH_MECHANISM}    ${DB_AUTH_MECHANISM}"
+          } > atest/local.resource
+
+      - name: Connection tests against the hosted cluster
+        if: steps.check.outputs.configured == 'true'
+        run: |
+          poetry run robot --outputdir atest-atlas-results atest/connection_option_tests.robot
+
+      - name: Drop the database this run created
+        if: always() && steps.check.outputs.configured == 'true'
+        env:
+          DB_HOST: ${{ secrets.ATLAS_DB_HOST }}
+          DB_USER: ${{ secrets.ATLAS_DB_USER }}
+          DB_PASSWORD: ${{ secrets.ATLAS_DB_PASSWORD }}
+        run: |
+          poetry run python - <<'PY'
+          import os, urllib.parse
+          from pymongo import MongoClient
+          user = urllib.parse.quote_plus(os.environ["DB_USER"])
+          password = urllib.parse.quote_plus(os.environ["DB_PASSWORD"])
+          uri = f"mongodb+srv://{user}:{password}@{os.environ['DB_HOST']}/"
+          client = MongoClient(uri, serverSelectionTimeoutMS=15000)
+          client.drop_database(os.environ["DB_NAME"])
+          print("dropped", os.environ["DB_NAME"])
+          PY
+
+      - name: Remove this runner from the Atlas access list
+        if: always() && steps.allowlist.outcome == 'success'
+        env:
+          API_PUBLIC_KEY: ${{ secrets.ATLAS_API_PUBLIC_KEY }}
+          API_PRIVATE_KEY: ${{ secrets.ATLAS_API_PRIVATE_KEY }}
+          PROJECT_ID: ${{ secrets.ATLAS_PROJECT_ID }}
+          RUNNER_IP: ${{ steps.allowlist.outputs.runner_ip }}
+        run: |
+          set -euo pipefail
+          curl -fsS --retry 3 -X DELETE \
+            --digest -u "${API_PUBLIC_KEY}:${API_PRIVATE_KEY}" \
+            -H "Accept: ${ATLAS_API_ACCEPT}" \
+            "${ATLAS_API_BASE}/groups/${PROJECT_ID}/accessList/${RUNNER_IP}" \
+            > /dev/null
+          echo "::notice::Removed this runner from the Atlas access list."
+
+      - name: Upload Robot Framework results
+        if: always() && steps.check.outputs.configured == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: atest-atlas-results
+          path: atest-atlas-results/
