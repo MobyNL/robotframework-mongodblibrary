@@ -23,7 +23,10 @@ release: read "Fixed" before upgrading.
 - A document could not be found by its id in string form. `Insert Document` returns an
   `ObjectId`; once that value passed through a Robot variable, a CSV or a JSON fixture
   it became text and no longer matched. A string `_id` in a query is now converted
-  automatically, including inside `$in` and comparison operators.
+  automatically, including inside `$in` and comparison operators. This rewrites part of
+  your query, so it is documented in full under `Object Ids` in the library
+  documentation and can be turned off with `coerce_object_ids=${False}` at import.
+  Only `_id` is affected, only in queries, and only when the value is a valid ObjectId.
 - `Check Query Result` and `Check Document Count` could loop forever. The retry
   deadline was tracked by adding `retry_pause` to a counter, so `retry_pause=0 seconds`
   never advanced it and the timeout was never reached. The deadline now uses a real
@@ -64,7 +67,11 @@ release: read "Fixed" before upgrading.
   back the current selection.
 - `Disconnect From All Databases` and `List Database Connections`. A `GLOBAL` scope
   library previously had no way to release its connections at the end of a run.
-- `Convert To Object Id`, for building a query document or pipeline stage by hand.
+- `Convert To Object Id`, for building a query document or pipeline stage by hand, and
+  the supported route for querying by id when `coerce_object_ids` is off.
+- `coerce_object_ids` import argument, for collections whose `_id` values are genuinely
+  strings that happen to be 24 hexadecimal characters, such as a truncated hash. With
+  it off, queries are passed through exactly as written.
 
 ### Changed
 

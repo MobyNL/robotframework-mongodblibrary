@@ -31,6 +31,20 @@ Verify Switch Database Changes The Connection Used By Later Keywords
     Should Be Equal As Integers                      ${in_first}     0
     [Teardown]    Switch Database                    alias=first_alias
 
+Verify A Document Is Found By Its Id As A String
+    [Documentation]    Coercion is on by default, so an id that has been through a Robot
+    ...    variable still matches the ObjectId stored in the database.
+    ${doc_id}                   Insert Document
+    ...                         collection_name=${COLLECTION}
+    ...                         document={"unique_id": "test_object_id"}
+    ...                         alias=first_alias
+    ${as_string}                Convert To String    ${doc_id}
+    ${found}                    Find Document
+    ...                         collection_name=${COLLECTION}
+    ...                         _id=${as_string}
+    ...                         alias=first_alias
+    Should Be Equal             ${found.unique_id}    test_object_id
+
 Verify Query Values Keep Their Type
     [Documentation]    An integer query argument must not be matched as a string.
     Insert Document

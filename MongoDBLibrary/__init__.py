@@ -15,6 +15,7 @@ class MongoDBLibrary(DynamicCore):
 
     - Introduction
     - Usage
+    - Object Ids
     - Hosted Clusters
     - Credentials
     - AWS Authentication
@@ -39,6 +40,61 @@ class MongoDBLibrary(DynamicCore):
     Connections are held in a pool and identified by an alias. Keywords called without
     an ``alias`` use the active connection, which is the one most recently connected
     under the default alias or selected with `Switch Database`.
+
+    == Object Ids ==
+
+    *This library rewrites part of your query. Read this section to know when.*
+
+    MongoDB gives each document an ``_id``, by default a 12-byte BSON ``ObjectId``
+    rather than a string. The two are different values and never match each other:
+
+    | ObjectId("6a7ccdea6abf6a4ebbc3514f")    # what MongoDB stores
+    |          "6a7ccdea6abf6a4ebbc3514f"     # a string that looks the same
+
+    Robot Framework stores variables as text, so a document id that has been through a
+    variable, a file, a CSV or an API response arrives as a string. Querying with it
+    matches nothing, and MongoDB reports no error: `Find Document` simply returns
+    ``None`` and `Count Documents` simply returns ``0``. The test then fails somewhere
+    later, or passes while checking nothing.
+
+    === What is rewritten ===
+
+    Before a query is sent, if its ``_id`` is a string that is a *valid* ObjectId — 24
+    hexadecimal characters — it is converted:
+
+    | _id="6a7ccdea6abf6a4ebbc3514f"    ->    _id=ObjectId("6a7ccdea6abf6a4ebbc3514f")
+
+    Values inside ``$in`` and comparison operators are converted the same way, so
+    ``query={"_id": {"$in": ["6a7c...", "6a7d..."]}}`` works too.
+
+    Every keyword that takes a query or free query parameters does this: the `Find`,
+    `Count`, `Update`, `Delete` and `Check` keywords.
+
+    === What is never rewritten ===
+
+    - Any ``_id`` that is not a valid ObjectId. ``user-42`` and ``order_991`` are passed
+      through untouched, so a collection keyed by ordinary strings keeps working.
+    - Any field other than ``_id``.
+    - The documents you insert or the values you set in an update. Only queries.
+    - Aggregation pipelines given to `Execute Query`, because a stage can nest to any
+      depth and guessing inside one would be reckless. Use `Convert To Object Id` there.
+
+    === When to turn it off ===
+
+    There is exactly one case where this behaviour is wrong: a collection whose ``_id``
+    values are genuinely *strings* that happen to be 24 hexadecimal characters, such as
+    a truncated hash or commit SHA. The conversion would then look for an ObjectId that
+    does not exist, and you are back to a silent no-match.
+
+    If that describes your data, turn it off at import and convert explicitly instead:
+
+    | Library    MongoDBLibrary    coerce_object_ids=${False}
+
+    | ${oid}    Convert To Object Id    ${doc_id}
+    | Find Document    collection_name=orders    _id=${oid}
+
+    With the option off, nothing about your queries is altered and passing a string
+    ``_id`` against an ObjectId-keyed collection will silently match nothing again.
 
     == Hosted Clusters ==
 
@@ -118,16 +174,18 @@ class MongoDBLibrary(DynamicCore):
     """
     ROBOT_LIBRARY_SCOPE = 'GLOBAL'
 
-    def __init__(self) -> None:
+    def __init__(self, coerce_object_ids: bool = True) -> None:
         """Initializes the MongoDB Library.
 
         Arguments:
-        - None
+        - ``coerce_object_ids``: Whether a string ``_id`` in a query is converted to a
+          BSON ObjectId, on by default. See `Object Ids` for exactly what this rewrites,
+          why it is on, and the one case in which you want it off.
 
-        * Sets up the connection manager.
-        * Initializes the MongoDBKeywords library.
+        | Library    MongoDBLibrary
+        | Library    MongoDBLibrary    coerce_object_ids=${False}
 
         """
         self.connection_manager = ConnectionManager()
-        libraries = [MongoDBKeywords(self.connection_manager)]
+        libraries = [MongoDBKeywords(self.connection_manager, coerce_object_ids=coerce_object_ids)]
         DynamicCore.__init__(self, libraries)
