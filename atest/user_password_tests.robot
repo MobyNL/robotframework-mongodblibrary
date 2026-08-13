@@ -13,9 +13,13 @@ Suite Teardown      Cleanup Test Data
 
 
 *** Variables ***
+# robocop: off=unused-variable
+# Read by the shared steps in resources/crud.resource. The rule checks one file at a
+# time, so it cannot see a variable that is defined here and used there.
 ${CONNECT_METHOD}           user and password
 ${COLLECTION}               test_collection_user_password
 ${DELETE_ALL_COLLECTION}    test_collection_user_password_delete_all
+# robocop: on=unused-variable
 
 
 *** Test Cases ***
