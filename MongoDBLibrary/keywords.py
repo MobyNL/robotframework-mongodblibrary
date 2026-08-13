@@ -21,14 +21,17 @@ class MongoDBKeywords:
     This class contains Robot Framework keywords for MongoDB operations.
     """
 
-    def __init__(self, connection_manager: ConnectionManager):
+    def __init__(self, connection_manager: ConnectionManager, coerce_object_ids: bool = True):
         """
         Initializes the MongoDBKeywords library.
 
         Arguments:
         - ``connection_manager``: Manages connections to MongoDB.
+        - ``coerce_object_ids``: Whether a string ``_id`` in a query is converted to an
+          ObjectId.
         """
         self.connection_manager = connection_manager
+        self.coerce_object_ids = coerce_object_ids
 
     # ----------------------------------------------------------------- #
     # Internals
@@ -56,28 +59,33 @@ class MongoDBKeywords:
             return ObjectId(value)
         return value
 
-    @classmethod
-    def _normalise_query(cls, query: Any) -> Any:
+    def _normalise_query(self, query: Any) -> Any:
         """
         Convert a string ``_id`` in a query into an ObjectId.
 
         Robot Framework turns every value it stores in a variable into a string when it
         is written back out, so a document id obtained from `Insert Document` arrives
-        here as text and would otherwise never match.
+        here as text and would otherwise never match. Disabled by importing the library
+        with ``coerce_object_ids=${False}``, after which queries are passed through
+        exactly as given.
         """
+        if not self.coerce_object_ids:
+            return query
         if not isinstance(query, dict) or "_id" not in query:
             return query
         normalised = dict(query)
         value = normalised["_id"]
         if isinstance(value, dict):
             normalised["_id"] = {
-                operator: [cls._coerce_object_id(item) for item in operand]
+                operator: [self._coerce_object_id(item) for item in operand]
                 if isinstance(operand, list)
-                else cls._coerce_object_id(operand)
+                else self._coerce_object_id(operand)
                 for operator, operand in value.items()
             }
         else:
-            normalised["_id"] = cls._coerce_object_id(value)
+            normalised["_id"] = self._coerce_object_id(value)
+        if normalised["_id"] != value:
+            logger.debug(f"Converted the query '_id' to an ObjectId: {normalised['_id']!r}")
         return normalised
 
     @staticmethod
@@ -421,6 +429,9 @@ class MongoDBKeywords:
         """
         Find a single document in a collection.
 
+        A string ``_id`` in the query is converted to an ObjectId, unless the library
+        was imported with ``coerce_object_ids=${False}``. See `Object Ids`.
+
         Arguments:
         - ``collection_name``: Name of the collection to search.
         - ``params``: Query parameters to locate the document.
@@ -444,6 +455,9 @@ class MongoDBKeywords:
         Use this when the query needs operators such as ``$gte``, ``$in`` or ``$regex``,
         which simple key=value parameters cannot express.
 
+        A string ``_id`` in the query is converted to an ObjectId, unless the library
+        was imported with ``coerce_object_ids=${False}``. See `Object Ids`.
+
         Arguments:
         - ``collection_name``: Name of the collection to search.
         - ``query``: MongoDB query document.
@@ -466,6 +480,9 @@ class MongoDBKeywords:
     def find_documents(self, collection_name: str, alias: Optional[str] = None, projection: Optional[dict] = None, sort: Optional[dict] = None, limit: int = 0, skip: int = 0, **params: Any) -> list:
         """
         Find every document in a collection matching the given parameters.
+
+        A string ``_id`` in the query is converted to an ObjectId, unless the library
+        was imported with ``coerce_object_ids=${False}``. See `Object Ids`.
 
         Arguments:
         - ``collection_name``: Name of the collection to search.
@@ -494,6 +511,9 @@ class MongoDBKeywords:
         Use this when the query needs operators such as ``$gte``, ``$in`` or ``$regex``,
         which simple key=value parameters cannot express.
 
+        A string ``_id`` in the query is converted to an ObjectId, unless the library
+        was imported with ``coerce_object_ids=${False}``. See `Object Ids`.
+
         Arguments:
         - ``collection_name``: Name of the collection to search.
         - ``query``: MongoDB query document.
@@ -517,6 +537,9 @@ class MongoDBKeywords:
         """
         Count the number of documents in a collection matching a query.
 
+        A string ``_id`` in the query is converted to an ObjectId, unless the library
+        was imported with ``coerce_object_ids=${False}``. See `Object Ids`.
+
         Arguments:
         - ``collection_name``: Name of the collection.
         - ``alias``: Alias of the connection (optional, defaults to the active alias).
@@ -539,6 +562,9 @@ class MongoDBKeywords:
 
         Use this when the query needs operators such as ``$gte``, ``$in`` or ``$regex``,
         which simple key=value parameters cannot express.
+
+        A string ``_id`` in the query is converted to an ObjectId, unless the library
+        was imported with ``coerce_object_ids=${False}``. See `Object Ids`.
 
         Arguments:
         - ``collection_name``: Name of the collection.
@@ -590,6 +616,9 @@ class MongoDBKeywords:
         """
         Update a single document in a collection.
 
+        A string ``_id`` in the query is converted to an ObjectId, unless the library
+        was imported with ``coerce_object_ids=${False}``. See `Object Ids`.
+
         Arguments:
         - ``collection_name``: Name of the collection.
         - ``query``: Query to find the document to update.
@@ -616,6 +645,9 @@ class MongoDBKeywords:
         This keyword allows you to use MongoDB update operators like $set, $push, $pull, etc.
         directly without automatic wrapping. Use this when you need operations other than $set.
 
+        A string ``_id`` in the query is converted to an ObjectId, unless the library
+        was imported with ``coerce_object_ids=${False}``. See `Object Ids`.
+
         Arguments:
         - ``collection_name``: Name of the collection.
         - ``query``: Query to find the document to update.
@@ -639,6 +671,9 @@ class MongoDBKeywords:
         """
         Update every document in a collection matching a query.
 
+        A string ``_id`` in the query is converted to an ObjectId, unless the library
+        was imported with ``coerce_object_ids=${False}``. See `Object Ids`.
+
         Arguments:
         - ``collection_name``: Name of the collection.
         - ``query``: Query to find the documents to update.
@@ -659,6 +694,9 @@ class MongoDBKeywords:
     def update_documents_with_operators(self, collection_name: str, query: dict, update: dict, alias: Optional[str] = None) -> int:
         """
         Update every matching document using raw MongoDB update operators.
+
+        A string ``_id`` in the query is converted to an ObjectId, unless the library
+        was imported with ``coerce_object_ids=${False}``. See `Object Ids`.
 
         Arguments:
         - ``collection_name``: Name of the collection.
@@ -685,6 +723,9 @@ class MongoDBKeywords:
         """
         Delete a single document from a collection.
 
+        A string ``_id`` in the query is converted to an ObjectId, unless the library
+        was imported with ``coerce_object_ids=${False}``. See `Object Ids`.
+
         Arguments:
         - ``collection_name``: Name of the collection.
         - ``params``: Query parameters to locate the document to delete.
@@ -704,6 +745,9 @@ class MongoDBKeywords:
     def delete_many(self, collection_name: str, alias: Optional[str] = None, **params: Any) -> int:
         """
         Delete multiple documents from a collection.
+
+        A string ``_id`` in the query is converted to an ObjectId, unless the library
+        was imported with ``coerce_object_ids=${False}``. See `Object Ids`.
 
         Arguments:
         - ``collection_name``: Name of the collection.
@@ -727,6 +771,9 @@ class MongoDBKeywords:
 
         This keyword allows you to use MongoDB query operators like $gte, $lt, $in, $regex, etc.
         directly without limitations. Use this when you need operations beyond simple key=value matching.
+
+        A string ``_id`` in the query is converted to an ObjectId, unless the library
+        was imported with ``coerce_object_ids=${False}``. See `Object Ids`.
 
         Arguments:
         - ``collection_name``: Name of the collection.
@@ -853,6 +900,9 @@ class MongoDBKeywords:
         """
         Check the result of a query against an expected value.
 
+        A string ``_id`` in the query is converted to an ObjectId, unless the library
+        was imported with ``coerce_object_ids=${False}``. See `Object Ids`.
+
         Arguments:
         - ``collection_name``: Name of the collection.
         - ``query``: Query to find the document.
@@ -904,6 +954,9 @@ class MongoDBKeywords:
     ) -> None:
         """
         Check the count of documents matching a query against an expected value.
+
+        A string ``_id`` in the query is converted to an ObjectId, unless the library
+        was imported with ``coerce_object_ids=${False}``. See `Object Ids`.
 
         Arguments:
         - ``collection_name``: Name of the collection.

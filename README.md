@@ -46,6 +46,40 @@ Connect With A Connection String
     [Teardown]             Disconnect From Database
 ```
 
+## Document Ids
+
+**This library rewrites the `_id` in your queries.** MongoDB stores `_id` as a BSON
+`ObjectId`, not a string, and the two never match each other. Robot Framework stores
+variables as text, so an id that has been through a variable, a file or an API response
+arrives as a string and would silently match nothing — no error, just an empty result.
+
+So before a query is sent, an `_id` that is a string of 24 hexadecimal characters is
+converted to an `ObjectId`:
+
+```
+_id="6a7ccdea6abf6a4ebbc3514f"   ->   _id=ObjectId("6a7ccdea6abf6a4ebbc3514f")
+```
+
+Values inside `$in` and comparison operators are converted too. Anything that is *not* a
+valid ObjectId (`user-42`, `order_991`) is passed through untouched, as is every field
+other than `_id`, every document you insert, and every aggregation pipeline.
+
+Turn it off if your collections use string `_id`s that happen to be 24 hex characters,
+such as a truncated hash — the conversion would look for an ObjectId that does not exist:
+
+```robotframework
+*** Settings ***
+Library    MongoDBLibrary    coerce_object_ids=${False}
+
+*** Test Cases ***
+Query An Id Explicitly
+    ${oid}    Convert To Object Id    ${doc_id}
+    Find Document    collection_name=orders    _id=${oid}
+```
+
+Full details, including exactly what is and is not rewritten, are in the `Object Ids`
+section of the [keyword documentation](MongoDBLibraryKeywords.html).
+
 ## Connecting To A Hosted Cluster (MongoDB Atlas)
 
 A hosted cluster's name is a DNS seed list rather than a single host, so it needs

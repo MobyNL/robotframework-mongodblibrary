@@ -74,6 +74,61 @@ def test_update_document_finds_its_target_by_string_id(mongo):
     assert updated["key"] == "new_value"
 
 
+def test_coercion_is_on_by_default(mongo_keywords):
+    assert mongo_keywords.coerce_object_ids is True
+
+
+def test_coercion_can_be_switched_off(no_coercion):
+    """With the option off, a string _id is passed through exactly as given."""
+    doc_id = no_coercion.insert_document("mycollection", {"key": "value"})
+
+    assert no_coercion.find_document("mycollection", _id=str(doc_id)) is None
+    assert no_coercion.find_document("mycollection", _id=doc_id) is not None
+
+
+def test_convert_to_object_id_is_the_route_when_coercion_is_off(no_coercion):
+    """The documented workaround has to actually work."""
+    doc_id = no_coercion.insert_document("mycollection", {"key": "value"})
+
+    oid = no_coercion.convert_to_object_id(str(doc_id))
+
+    assert no_coercion.find_document("mycollection", _id=oid) is not None
+
+
+@pytest.mark.parametrize(
+    "keyword_name, args",
+    [
+        param("count_documents_with_query", ("mycollection", {"_id": "6a7ccdea6abf6a4ebbc3514f"}), id="count_with_query"),
+        param("find_documents_with_query", ("mycollection", {"_id": "6a7ccdea6abf6a4ebbc3514f"}), id="find_with_query"),
+    ],
+)
+def test_coercion_off_applies_to_every_query_keyword(no_coercion, keyword_name, args):
+    no_coercion.insert_document("mycollection", {"key": "value"})
+
+    assert not getattr(no_coercion, keyword_name)(*args)
+
+
+def test_the_library_passes_the_option_through():
+    """The flag is set at import time, so it has to reach the keyword class."""
+    from MongoDBLibrary import MongoDBLibrary
+
+    assert MongoDBLibrary().keywords["find_document"].__self__.coerce_object_ids is True
+    assert MongoDBLibrary(coerce_object_ids=False).keywords["find_document"].__self__.coerce_object_ids is False
+
+
+def test_the_library_converts_the_option_from_a_robot_argument():
+    """`Library  MongoDBLibrary  coerce_object_ids=${False}` must arrive as a boolean."""
+    from robot.running.arguments import PythonArgumentParser
+
+    from MongoDBLibrary import MongoDBLibrary
+
+    spec = PythonArgumentParser("MongoDBLibrary").parse(MongoDBLibrary.__init__)
+
+    _, named = spec.convert([], [("coerce_object_ids", "False")])
+
+    assert named == [("coerce_object_ids", False)]
+
+
 def test_convert_to_object_id(mongo):
     doc_id = mongo.insert_document("mycollection", {"key": "value"})
 

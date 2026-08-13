@@ -34,6 +34,15 @@ def mongo(mongo_keywords):
 
 
 @pytest.fixture
+def no_coercion(connection_manager):
+    """Keywords with ObjectId coercion switched off, backed by an in-memory MongoDB."""
+    keywords = MongoDBKeywords(connection_manager, coerce_object_ids=False)
+    client = mongomock.MongoClient()
+    connection_manager.add_to_connection_pool(client["test_db"], "default")
+    return keywords
+
+
+@pytest.fixture
 def mock_db(mongo_keywords, mocker):
     """Keywords backed by a MagicMock database, for driver-error paths only."""
     database = mocker.MagicMock(name="MockDatabase")
