@@ -5,6 +5,26 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `db_password` and `db_conn_string` accept a Robot Framework `Secret`, so the value is
+  written to `log.html` and `output.xml` as `<secret>` rather than as itself. A secret
+  can only be built from an environment variable, which is what makes it stronger than
+  passing an ordinary variable: there is no way to write the value into the suite by
+  accident. A connection string embeds its password, so giving that as a `Secret` hides
+  the whole string.
+
+  This needs Robot Framework 7.4, which introduced the type. The supported floor stays at
+  7.3, where there is no `Secret` to accept and no way for a suite to produce one, so the
+  arguments behave exactly as before.
+
+  Passing a `Secret` previously failed with `got value '<secret>' (Secret) that cannot be
+  converted to string or None` — a clear error rather than a silent one, since Robot
+  Framework refused the conversion instead of sending the literal text `<secret>` as the
+  password.
+
 ## [1.0.0] - 2026-08-13
 
 The first release the version number claims is stable. It collects the work previously

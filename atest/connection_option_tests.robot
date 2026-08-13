@@ -19,6 +19,25 @@ Test Teardown       Disconnect From All Databases
 
 
 *** Test Cases ***
+Verify Connecting With The Password As A Secret
+    [Documentation]    A Robot Framework Secret keeps the password out of the log while
+    ...    still authenticating. Needs Robot Framework 7.4, which introduced the type.
+    ...
+    ...    The Secret is built here rather than declared as ${VAR: Secret} %{ENV}, so the
+    ...    suite needs no environment variable to run. What is under test is the library
+    ...    accepting a Secret and authenticating with it; where the object came from makes
+    ...    no difference to that.
+    ${secret_password}    Make A Secret    ${DB_PASSWORD}
+    Connect With Options    db_password=${secret_password}
+    Check If Database Connection Exists
+    ${count}    Count Documents    collection_name=test_collection_secret
+    Should Be Equal As Integers    ${count}    0
+
+Verify A Secret Password Is Not Written To The Log
+    [Documentation]    The reason to use one at all.
+    ${secret_password}    Make A Secret    ${DB_PASSWORD}
+    Should Be Equal    ${secret_password.__str__()}    <secret>
+
 Verify Connecting With An Explicit Auth Source
     [Documentation]    Needed whenever the user was not created in the database being used.
     ...    Both a hosted cluster and the CI container keep their users in ``admin``.
@@ -144,6 +163,15 @@ Verify A Failed Connection Leaves No Alias Behind
 
 
 *** Keywords ***
+Make A Secret
+    [Documentation]    Wrap a value as a Robot Framework Secret, skipping below 7.4.
+    [Arguments]    ${value}
+    ${version}    Evaluate    robot.version.VERSION    modules=robot
+    Skip If    ${{ tuple(int(p) for p in "${version}".split(".")[:2]) < (7, 4) }}
+    ...    Secret needs Robot Framework 7.4, this is ${version}
+    ${secret}    Evaluate    robot.api.types.Secret($value)    modules=robot.api.types
+    RETURN    ${secret}
+
 Connect With Options
     [Documentation]    Connect using a host and credentials plus whatever options are given.
     [Arguments]    ${alias}=default    &{options}

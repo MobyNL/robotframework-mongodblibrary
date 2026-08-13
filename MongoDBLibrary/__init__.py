@@ -160,8 +160,40 @@ class MongoDBLibrary(DynamicCore):
 
     Robot Framework writes each keyword argument into the log as it appears in the
     suite source, so a password written literally in a suite ends up in ``log.html``
-    and ``output.xml``. Pass credentials as variables, supplied from a resource file
-    that is not committed, from the command line, or from the environment:
+    and ``output.xml``.
+
+    === Secrets ===
+
+    On Robot Framework 7.4 and later, ``db_password`` and ``db_conn_string`` accept a
+    ``Secret``. A secret variable is declared with a type and takes its value from the
+    environment:
+
+    | *** Variables ***
+    | ${DB_PASSWORD: Secret}    %{MONGO_PASSWORD}
+    |
+    | *** Test Cases ***
+    | Connect With A Secret
+    |     Connect To Database    db_name=mydb    db_user=${DB_USER}    db_password=${DB_PASSWORD}    db_host=localhost
+
+    The value never appears in the log: Robot Framework writes ``<secret>`` wherever the
+    variable is resolved. A connection string embeds its password, so giving that as a
+    ``Secret`` hides the whole string.
+
+    Note that a secret can only come from the environment. Robot Framework refuses to
+    build one from a literal, which is what makes this stronger than a plain variable —
+    there is no way to write the value into the suite by accident.
+
+    A ``Secret`` is not encryption. The value is plain text in memory, it is sent to
+    MongoDB as typed, and a keyword that returns or logs it discloses it. What it
+    prevents is the accident of Robot Framework itself recording the argument.
+
+    === Without secrets ===
+
+    On Robot Framework 7.3, and anywhere a ``Secret`` is inconvenient, pass credentials
+    as ordinary variables supplied from a resource file that is not committed, from the
+    command line, or from the environment. The argument is still written to the log as
+    the variable name rather than its value, as long as the value is not written
+    literally in the suite:
 
     | Connect To Database    db_name=mydb    db_user=${DB_USER}    db_password=${DB_PASSWORD}    db_host=localhost
 

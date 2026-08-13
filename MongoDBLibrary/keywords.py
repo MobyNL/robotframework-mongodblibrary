@@ -1,6 +1,6 @@
 import time
 from ast import literal_eval
-from typing import Any, Callable, Optional, Union
+from typing import Any, Callable, cast, Optional, TYPE_CHECKING, Union
 
 from assertionengine import AssertionOperator, verify_assertion
 from bson import ObjectId
@@ -13,6 +13,24 @@ from robot.libraries.BuiltIn import BuiltIn
 from robot.utils import DotDict, timestr_to_secs
 
 from MongoDBLibrary.connection_pool import ConnectionManager
+
+try:  # Robot Framework 7.4 and later
+    from robot.api.types import Secret
+except ImportError:  # pragma: no cover - Robot Framework 7.3, which has no Secret type
+    Secret = None
+
+if TYPE_CHECKING:
+    from robot.api.types import Secret as _Secret
+
+    # A credential, given either as plain text or as a Robot Framework ``Secret``.
+    Credential = Union[str, _Secret]
+    OptionalCredential = Optional[Credential]
+else:
+    # Built at import so the annotation names a type Robot Framework can convert to.
+    # On 7.3 there is no Secret to accept, and no way for a suite to produce one, so the
+    # argument is a plain string exactly as it was before.
+    Credential = Union[str, Secret] if Secret is not None else str
+    OptionalCredential = Optional[Credential]
 
 
 class MongoDBKeywords:
@@ -61,6 +79,19 @@ class MongoDBKeywords:
         other keyword.
         """
         return self._get_database(alias).client
+
+    @staticmethod
+    def _reveal(credential: OptionalCredential) -> Optional[str]:
+        """Return the text of a credential, unwrapping a Robot Framework ``Secret``.
+
+        Everything downstream needs the plain value: pymongo has to authenticate with
+        it, and the client cache has to key on it. Two ``Secret`` objects holding the
+        same password are still different objects, so leaving one wrapped would make
+        every alias miss the cache and open its own connection pool.
+        """
+        if Secret is not None and isinstance(credential, Secret):
+            return cast(str, credential.value)
+        return credential
 
     @staticmethod
     def _coerce_object_id(value: Any) -> Any:
@@ -191,7 +222,7 @@ class MongoDBKeywords:
     # ----------------------------------------------------------------- #
 
     @keyword
-    def connect_to_database(self, db_name: str, db_user: Optional[str] = None, db_password: Optional[str] = None, db_host: Optional[str] = None, db_port: Optional[int] = None, alias: Optional[str] = None, srv: bool = False, tls: Optional[bool] = None, auth_source: Optional[str] = None, auth_mechanism: Optional[str] = None, replica_set: Optional[str] = None, direct_connection: Optional[bool] = None, read_preference: Optional[str] = None, server_selection_timeout: Optional[str] = None) -> None:
+    def connect_to_database(self, db_name: str, db_user: Optional[str] = None, db_password: OptionalCredential = None, db_host: Optional[str] = None, db_port: Optional[int] = None, alias: Optional[str] = None, srv: bool = False, tls: Optional[bool] = None, auth_source: Optional[str] = None, auth_mechanism: Optional[str] = None, replica_set: Optional[str] = None, direct_connection: Optional[bool] = None, read_preference: Optional[str] = None, server_selection_timeout: Optional[str] = None) -> None:
         """
         Connects to MongoDB and adds the database object to the connection pool.
 
@@ -202,7 +233,8 @@ class MongoDBKeywords:
         Arguments:
         - ``db_name``: Name of the database to connect to.
         - ``db_user``: Username for authentication (optional).
-        - ``db_password``: Password for authentication (optional).
+        - ``db_password``: Password for authentication (optional). Accepts a Robot
+          Framework ``Secret``, which keeps the value out of the log. See `Credentials`.
         - ``db_host``: Hostname or IP address of the MongoDB server (optional).
         - ``db_port``: Port number of the MongoDB server (optional, defaults to 27017). Ignored when ``srv`` is true.
         - ``alias``: Alias for the connection (optional).
@@ -267,12 +299,13 @@ class MongoDBKeywords:
         if server_selection_timeout:
             options["serverSelectionTimeoutMS"] = int(timestr_to_secs(server_selection_timeout) * 1000)
 
-        cache_key = ("host", host, port, db_user, db_password, tuple(sorted(options.items())))
-        self._connect(cache_key, lambda: MongoClient(host=host, port=port, username=db_user, password=db_password, **options), db_name, alias)
+        password = self._reveal(db_password)
+        cache_key = ("host", host, port, db_user, password, tuple(sorted(options.items())))
+        self._connect(cache_key, lambda: MongoClient(host=host, port=port, username=db_user, password=password, **options), db_name, alias)
         logger.info(f"Connected to MongoDB with alias '{self._resolve_alias(alias)}' at {db_host}")
 
     @keyword
-    def connect_to_database_using_connection_string(self, db_conn_string: str, db_name: str, alias: Optional[str] = None, server_selection_timeout: Optional[str] = None) -> None:
+    def connect_to_database_using_connection_string(self, db_conn_string: Credential, db_name: str, alias: Optional[str] = None, server_selection_timeout: Optional[str] = None) -> None:
         """
         Connects to MongoDB using a connection string and adds the database object to the connection pool.
 
@@ -282,7 +315,9 @@ class MongoDBKeywords:
 
         Arguments:
         - ``db_conn_string``: MongoDB connection string. Both ``mongodb://`` and
-          ``mongodb+srv://`` are accepted.
+          ``mongodb+srv://`` are accepted. A connection string embeds the password, so
+          this accepts a Robot Framework ``Secret`` and the whole string is then kept out
+          of the log. See `Credentials`.
         - ``db_name``: Name of the database to connect to.
         - ``alias``: Alias for the connection (optional).
         - ``server_selection_timeout``: How long to wait for a reachable server before
@@ -301,8 +336,9 @@ class MongoDBKeywords:
         if server_selection_timeout:
             options["serverSelectionTimeoutMS"] = int(timestr_to_secs(server_selection_timeout) * 1000)
 
-        cache_key = ("uri", db_conn_string, tuple(sorted(options.items())))
-        self._connect(cache_key, lambda: MongoClient(db_conn_string, **options), db_name, alias)
+        connection_string = self._reveal(db_conn_string)
+        cache_key = ("uri", connection_string, tuple(sorted(options.items())))
+        self._connect(cache_key, lambda: MongoClient(connection_string, **options), db_name, alias)
         logger.info(f"Connected to MongoDB with alias '{self._resolve_alias(alias)}' using connection string.")
 
     def _connect(self, cache_key: Any, create_client: Callable[[], MongoClient], db_name: str, alias: Optional[str]) -> None:

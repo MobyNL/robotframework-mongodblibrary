@@ -193,6 +193,97 @@ def test_srv_and_tls_are_converted_from_robot_arguments():
     assert named == [("srv", True), ("tls", False)]
 
 
+# --------------------------------------------------------------------------- #
+# Robot Framework Secret credentials
+# --------------------------------------------------------------------------- #
+
+secret = pytest.importorskip("robot.api.types", reason="Secret needs Robot Framework 7.4").Secret
+
+
+def test_a_secret_password_reaches_the_driver_as_text(mongo_keywords, mocker):
+    """The point of Secret is hiding the value from the log, not from pymongo."""
+    client_class = mocker.patch("MongoDBLibrary.keywords.MongoClient", return_value=mocker.MagicMock())
+
+    mongo_keywords.connect_to_database(db_name="test_db", db_host="localhost", db_password=secret("hunter2"))
+
+    assert client_class.call_args.kwargs["password"] == "hunter2"
+
+
+def test_a_plain_password_still_works(mongo_keywords, mocker):
+    client_class = mocker.patch("MongoDBLibrary.keywords.MongoClient", return_value=mocker.MagicMock())
+
+    mongo_keywords.connect_to_database(db_name="test_db", db_host="localhost", db_password="hunter2")
+
+    assert client_class.call_args.kwargs["password"] == "hunter2"
+
+
+def test_a_secret_connection_string_reaches_the_driver_as_text(mongo_keywords, mocker):
+    client_class = mocker.patch("MongoDBLibrary.keywords.MongoClient", return_value=mocker.MagicMock())
+
+    mongo_keywords.connect_to_database_using_connection_string(
+        db_conn_string=secret("mongodb://localhost:27017"), db_name="test_db"
+    )
+
+    assert client_class.call_args.args == ("mongodb://localhost:27017",)
+
+
+def test_two_aliases_with_equal_secrets_share_one_client(mongo_keywords, two_clients):
+    """Regression guard: two Secret objects holding the same password are still two
+    objects. Keying the client cache on the wrapper rather than the value would make
+    every alias miss the cache and open its own connection pool."""
+    factory, _ = two_clients
+
+    mongo_keywords.connect_to_database(db_name="db", db_host="localhost", db_password=secret("pw"), alias="a")
+    mongo_keywords.connect_to_database(db_name="db", db_host="localhost", db_password=secret("pw"), alias="b")
+
+    assert factory.call_count == 1
+    pool = mongo_keywords.connection_manager.db_connection_pool
+    assert pool["a"].client is pool["b"].client
+
+
+def test_a_secret_and_an_equal_plain_password_share_one_client(mongo_keywords, two_clients):
+    """The same credential is the same connection however the suite chose to write it."""
+    factory, _ = two_clients
+
+    mongo_keywords.connect_to_database(db_name="db", db_host="localhost", db_password="pw", alias="a")
+    mongo_keywords.connect_to_database(db_name="db", db_host="localhost", db_password=secret("pw"), alias="b")
+
+    assert factory.call_count == 1
+
+
+def test_different_secrets_do_not_share_a_client(mongo_keywords, two_clients):
+    factory, _ = two_clients
+
+    mongo_keywords.connect_to_database(db_name="db", db_host="localhost", db_password=secret("one"), alias="a")
+    mongo_keywords.connect_to_database(db_name="db", db_host="localhost", db_password=secret("two"), alias="b")
+
+    assert factory.call_count == 2
+
+
+@pytest.mark.parametrize(
+    "keyword_name, argument",
+    [
+        param("connect_to_database", "db_password", id="password"),
+        param("connect_to_database_using_connection_string", "db_conn_string", id="connection_string"),
+    ],
+)
+def test_robot_framework_accepts_a_secret_for_the_credential(keyword_name, argument):
+    """A str annotation makes Robot Framework reject a Secret outright, which is how
+    this was found: 'got value <secret> (Secret) that cannot be converted to string'."""
+    spec = PythonArgumentParser(keyword_name).parse(getattr(MongoDBKeywords, keyword_name))
+    value = secret("hunter2")
+
+    _, named = spec.convert(["mydb"], [(argument, value)])
+
+    assert dict(named)[argument] is value
+
+
+def test_a_secret_does_not_disclose_itself_when_logged():
+    """Robot Framework logs the object, so its string form is what a suite would leak."""
+    assert str(secret("hunter2")) == "<secret>"
+    assert "hunter2" not in repr(secret("hunter2"))
+
+
 @pytest.mark.parametrize(
     "argument, value, option",
     [

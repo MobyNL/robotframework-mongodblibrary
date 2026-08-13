@@ -35,6 +35,25 @@ poetry add robotframework-mongodb
 Keywords take named arguments. Pass credentials as variables rather than writing them
 into the suite, because Robot Framework copies the argument as written into the log.
 
+On Robot Framework 7.4 and later, `db_password` and `db_conn_string` accept a
+[`Secret`](https://robotframework.org/robotframework/latest/RobotFrameworkUserGuide.html#secret-type),
+which keeps the value out of `log.html` and `output.xml`:
+
+```robotframework
+*** Variables ***
+${DB_PASSWORD: Secret}    %{MONGO_PASSWORD}
+
+*** Test Cases ***
+Connect With A Secret
+    Connect To Database    db_name=mydb    db_user=${DB_USER}    db_password=${DB_PASSWORD}
+    ...                    db_host=localhost
+```
+
+A secret can only come from the environment — Robot Framework refuses to build one from
+a literal, so the value cannot be written into the suite by accident. It is not
+encryption: the value is plain text in memory and is sent to MongoDB as typed. What it
+prevents is Robot Framework recording the argument.
+
 ```robotframework
 *** Settings ***
 Library    MongoDBLibrary
