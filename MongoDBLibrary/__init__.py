@@ -204,19 +204,29 @@ class MongoDBLibrary(DynamicCore):
 
     | Connect To Database    db_name=mydb    db_user=${DB_USER}    db_password=${DB_PASSWORD}    db_host=localhost
 
-    == AWS Authentication ==
+    == AWS IAM Authentication ==
 
-    MongoDB Library supports AWS authentication using the MONGODB-AWS mechanism.
-    To enable this feature, ensure the following steps are completed:
+    AWS IAM authentication uses the ``MONGODB-AWS`` mechanism, which needs two things
+    set together — the mechanism itself and an auth source of ``$external``:
 
-    1. Install the required `pymongo-auth-aws` package:
-       | python -m pip install 'pymongo[aws]'
+    | Connect To Database    db_name=mydb    db_host=mycluster.abcde.mongodb.net    srv=${True}    auth_mechanism=MONGODB-AWS    auth_source=$external
 
-    2. Ensure that your AWS credentials are properly set up in your environment.
-       The library will automatically use the credentials from the environment variables
-       `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optionally `AWS_SESSION_TOKEN`.
+    With `Connect To Database Using Connection String`, put both in the URI instead:
+    ``...?authMechanism=MONGODB-AWS&authSource=$external``.
 
-    For more details, refer to the [https://www.mongodb.com/docs/manual/core/security-aws/|MongoDB documentation].
+    Install the mechanism's dependency with the ``aws`` extra:
+
+    | python -m pip install 'robotframework-mongodb[aws]'
+
+    Credentials are resolved by ``pymongo-auth-aws``, not by this library, which only
+    passes the mechanism through. An EC2, ECS, EKS or Lambda role is picked up with no
+    credentials given at all; otherwise ``AWS_ACCESS_KEY_ID``, ``AWS_SECRET_ACCESS_KEY``
+    and optionally ``AWS_SESSION_TOKEN`` are read from the environment. For an IAM user
+    you may also pass the access key as ``db_user`` and the secret key as ``db_password``.
+
+    See [https://pymongo.readthedocs.io/en/stable/examples/authentication.html|pymongo's
+    authentication examples], and the ``Using With AWS`` section of the README for Amazon
+    DocumentDB, whose TLS and ``retryWrites`` requirements are separate from IAM.
 
     == Assertions ==
 

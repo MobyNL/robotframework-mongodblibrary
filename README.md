@@ -1,9 +1,27 @@
 # Robot Framework MongoDBLibrary
 
+[![PyPI](https://img.shields.io/pypi/v/robotframework-mongodb.svg)](https://pypi.org/project/robotframework-mongodb/)
+[![Python versions](https://img.shields.io/pypi/pyversions/robotframework-mongodb.svg)](https://pypi.org/project/robotframework-mongodb/)
+[![CI](https://github.com/MobyNl/robotframework-mongodblibrary/actions/workflows/ci.yml/badge.svg)](https://github.com/MobyNl/robotframework-mongodblibrary/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 MongoDBLibrary is a test library for [Robot Framework](https://robotframework.org/) that provides keywords for interacting with MongoDB databases.
 
 📖 **[Keyword documentation](https://mobynl.github.io/robotframework-mongodblibrary/)** —
 every keyword, its arguments and examples.
+
+- [Features](#features)
+- [Installation](#installation)
+- [Requirements](#requirements)
+- [Importing](#importing)
+- [Usage Example](#usage-example)
+- [Resetting Between Tests](#resetting-between-tests)
+- [Waiting For Data](#waiting-for-data)
+- [Document Ids](#document-ids)
+- [Connecting To A Hosted Cluster (MongoDB Atlas)](#connecting-to-a-hosted-cluster-mongodb-atlas)
+- [Using With AWS](#using-with-aws)
+- [Beyond These Keywords](#beyond-these-keywords)
+- [Older Robot Framework Versions](#older-robot-framework-versions)
 
 ## Features
 - Connect to a single host, a connection string, or a hosted cluster such as MongoDB Atlas
@@ -43,10 +61,72 @@ constraint. If you are on an older Robot Framework, read
 [Older Robot Framework Versions](#older-robot-framework-versions) — one keyword argument
 behaves differently and the rest is identical.
 
+Three names differ and are easy to mix up: the package you install is
+`robotframework-mongodb`, the library you import is `MongoDBLibrary`, and the repository
+is `robotframework-mongodblibrary`.
+
+## Importing
+
+```robotframework
+*** Settings ***
+Library    MongoDBLibrary    coerce_object_ids=${True}
+```
+
+`coerce_object_ids` (default `${True}`) is the library's only import-time argument. It
+controls whether a string `_id` in a query is rewritten to a BSON `ObjectId`; see
+[Document Ids](#document-ids) for what that means and when to turn it off. Everything
+else — hosts, credentials, TLS, auth mechanism — is configured per connection, on the
+connect keywords.
+
+The library's scope is `GLOBAL`, so one instance is shared by every suite in a run and a
+connection opened in one suite is still open in the next. One consequence is worth
+knowing: Robot Framework creates a separate instance per set of import arguments, so two
+suites that import with *different* `coerce_object_ids` values get separate instances,
+and therefore separate connection pools rather than shared connections.
+
 ## Usage Example
 
-Keywords take named arguments. Pass credentials as variables rather than writing them
-into the suite, because Robot Framework copies the argument as written into the log.
+Keywords take named arguments:
+
+```robotframework
+*** Settings ***
+Library    MongoDBLibrary
+
+*** Test Cases ***
+Connect With A Host And Credentials
+    Connect To Database    db_name=mydb    db_user=${DB_USER}    db_password=${DB_PASSWORD}
+    ...                    db_host=localhost    db_port=27017
+    ${doc_id}              Insert Document    collection_name=mycollection    document={"key": "value"}
+    ${document}            Find Document      collection_name=mycollection    key=value
+    [Teardown]             Disconnect From Database
+
+Connect With A Connection String
+    Connect To Database Using Connection String    db_conn_string=${DB_CONNECT_STRING}    db_name=mydb
+    ${count}               Count Documents    collection_name=mycollection    key=value
+    [Teardown]             Disconnect From Database
+```
+
+### Several Databases At Once
+
+Give each connection an `alias` and the connections stay open side by side. Keywords use
+the active connection unless passed an `alias` of their own, and `Switch Connection`
+changes which one that is:
+
+```robotframework
+*** Test Cases ***
+Copy A Document Between Two Databases
+    Connect To Database    db_name=source    db_host=localhost    alias=source
+    Connect To Database    db_name=target    db_host=localhost    alias=target
+    ${document}    Find Document    collection_name=orders    order_id=A-1    alias=source
+    Switch Connection    alias=target
+    Insert Document      collection_name=orders    document=${document}
+    [Teardown]           Disconnect From All Databases
+```
+
+### Keeping Credentials Out Of The Log
+
+Pass credentials as variables rather than writing them into the suite, because Robot
+Framework copies the argument as written into the log.
 
 On Robot Framework 7.4 and later, `db_password` and `db_conn_string` accept a
 [`Secret`](https://robotframework.org/robotframework/latest/RobotFrameworkUserGuide.html#secret-type),
@@ -70,24 +150,6 @@ prevents is Robot Framework recording the argument.
 On Robot Framework 5.0 through 7.3 there is no `Secret` type, so both arguments take a
 plain string and nothing above applies. Nothing else differs; see
 [Older Robot Framework Versions](#older-robot-framework-versions).
-
-```robotframework
-*** Settings ***
-Library    MongoDBLibrary
-
-*** Test Cases ***
-Connect With A Host And Credentials
-    Connect To Database    db_name=mydb    db_user=${DB_USER}    db_password=${DB_PASSWORD}
-    ...                    db_host=localhost    db_port=27017
-    ${doc_id}              Insert Document    collection_name=mycollection    document={"key": "value"}
-    ${document}            Find Document      collection_name=mycollection    key=value
-    [Teardown]             Disconnect From Database
-
-Connect With A Connection String
-    Connect To Database Using Connection String    db_conn_string=${DB_CONNECT_STRING}    db_name=mydb
-    ${count}               Count Documents    collection_name=mycollection    key=value
-    [Teardown]             Disconnect From Database
-```
 
 ## Resetting Between Tests
 
@@ -179,35 +241,86 @@ Connect To Atlas With A Cluster Name
 ports. Use `tls=${False}` to force TLS off, or `tls=${True}` to force it on for a
 plain host.
 
-## Using with AWS (DocumentDB/IAM Authentication)
+## Using With AWS
 
-To connect to AWS DocumentDB or use AWS IAM authentication, install the library with the `aws` extra:
+Two separate things are often confused here. Amazon DocumentDB is a MongoDB-compatible
+service whose *transport* needs particular settings; AWS IAM authentication is a
+*credential* mechanism, usable against DocumentDB 5.0 and later and against Atlas
+clusters hosted on AWS. They are configured independently, and you may want one, the
+other, or both.
+
+Neither path is exercised in CI, unlike the Robot Framework range — they need AWS
+infrastructure. The library passes these options straight to pymongo and contains no
+AWS-specific code.
+
+### Amazon DocumentDB
+
+DocumentDB requires TLS against Amazon's own certificate authority, and it does not
+implement retryable writes, which pymongo enables by default. Leaving `retryWrites` on
+is the usual first failure. `tlsCAFile` has no keyword argument, so DocumentDB is the one
+case where the connection string is the only route:
+
+```robotframework
+*** Variables ***
+${DB_CONNECT_STRING}    mongodb://${DB_USER}:${DB_PASSWORD}@mycluster.cluster-abc123.eu-west-1.docdb.amazonaws.com:27017/?tls=true&tlsCAFile=global-bundle.pem&replicaSet=rs0&readPreference=secondaryPreferred&retryWrites=false
+
+*** Test Cases ***
+Connect To DocumentDB
+    Connect To Database Using Connection String
+    ...    db_conn_string=${DB_CONNECT_STRING}    db_name=mydb
+    [Teardown]    Disconnect From Database
+```
+
+- `tls=true&tlsCAFile=global-bundle.pem` — download the bundle from
+  [Amazon's CA page](https://docs.aws.amazon.com/documentdb/latest/developerguide/ca_cert_rotation.html)
+  and give the path to it.
+- `retryWrites=false` — required; without it every write fails.
+- `replicaSet=rs0&readPreference=secondaryPreferred` — for a cluster endpoint. Drop both
+  when connecting to a single instance endpoint.
+
+`Connect To Database` reaches `tls`, `replica_set` and `read_preference` as named
+arguments, but not `tlsCAFile`, so it only suits a DocumentDB cluster whose CA is already
+trusted by the system store.
+
+### AWS IAM Authentication (MONGODB-AWS)
+
+IAM authentication needs two options set together — the mechanism, and an auth source of
+`$external`. Install the mechanism's dependency with the `aws` extra:
 
 ```bash
 pip install "robotframework-mongodb[aws]"
 ```
 
-Or with Poetry:
-
 ```bash
 poetry add robotframework-mongodb --extras aws
 ```
 
-This will install the required dependency `pymongo-auth-aws`.
-
-When connecting, use the appropriate MongoDB URI and ensure your environment is configured with AWS credentials (e.g., via environment variables, AWS CLI, or EC2 instance roles).
-
-Example:
+That adds one dependency, `pymongo-auth-aws`. Then set the mechanism, either with named
+arguments:
 
 ```robotframework
-*** Settings ***
-Library    MongoDBLibrary
-
 *** Test Cases ***
-Connect To AWS DocumentDB
-    Connect To Database Using Connection String
-    ...    db_conn_string=${DB_CONNECT_STRING}    db_name=mydb
+Connect With An IAM Role
+    Connect To Database    db_name=mydb    db_host=mycluster.abcde.mongodb.net
+    ...                    srv=${True}    auth_mechanism=MONGODB-AWS    auth_source=$external
+    [Teardown]             Disconnect From Database
 ```
+
+or as URI parameters, which is how you combine IAM with the DocumentDB settings above —
+append `&authMechanism=MONGODB-AWS&authSource=$external` to the connection string.
+
+Credentials are resolved by `pymongo-auth-aws`, not by this library. Running on EC2, ECS,
+EKS or Lambda, the instance or task role is picked up with no credentials given at all —
+which is the point of using IAM. Otherwise `pymongo-auth-aws` reads
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and optionally `AWS_SESSION_TOKEN` from the
+environment. For an IAM user you can instead pass the access key as `db_user` and the
+secret key as `db_password`.
+
+DocumentDB supports IAM only on version 5.0 and later. See
+[pymongo's authentication examples](https://pymongo.readthedocs.io/en/stable/examples/authentication.html),
+[Atlas AWS IAM authentication](https://www.mongodb.com/docs/atlas/security/aws-iam-authentication/),
+and AWS's
+[IAM authentication guide](https://docs.aws.amazon.com/documentdb/latest/developerguide/iam-identity-auth.html).
 
 ## Beyond These Keywords
 
@@ -263,33 +376,21 @@ predates 5.0, and the keyword signatures use annotations 5.0 already converts.
 
 ### Robot Framework 4 and older
 
-Not supported, for two reasons that are not worth working around:
-
-- The assertion engine will not install below Robot Framework 5, so the assertion
-  keywords would have to be reimplemented.
-- Robot Framework 4 does not convert built-in generic annotations such as `list[str]` and
-  `dict[str, Any]` — that arrived in 5.0 — so arguments would reach keywords as strings.
-  Every signature in the library would need rewriting to `typing.List` and `typing.Dict`.
+Not supported: the assertion engine will not install below 5.0, and 4.x does not convert
+the built-in generic annotations the keywords use (`list[str]`, `dict[str, Any]`), so
+arguments would arrive as strings.
 
 ### How the range is tested
 
 CI runs the unit tests and generates the keyword documentation against Robot Framework
 5.0.1, 6.1.1, 7.3.2 and 7.4.0 — the floor, the version where the assertion engine changes
-line, and both sides of the `Secret` branch. Libdoc is included because it reads every
-signature and docstring, so it catches an annotation an older version cannot convert,
-which the unit tests would not notice.
-
-A further nightly job installs whatever Robot Framework and assertion engine are newest on
-PyPI, ignoring the upper bounds in `pyproject.toml`. Every other job installs a pinned
-version, so none of them would ever see a release made after the last commit; this one
-means a new version that breaks the library shows up here rather than in your suite.
-
-The acceptance suites in `atest/` are not part of that: they use `VAR`, which is 7.0
-syntax, and the repository's formatter rewrites variable assignments into it, so they run
-only on the newest Robot Framework. This affects contributors, not users. What those
-suites cover beyond the unit tests is the driver talking to a real MongoDB server, which
-does not vary by Robot Framework version; what does vary — argument conversion, keyword
-discovery, libdoc — is covered across the whole range.
+line, and both sides of the `Secret` branch. Libdoc runs too, because it reads every
+signature and docstring and so catches an annotation an older version cannot convert,
+which the unit tests would not notice. A nightly job additionally installs whatever Robot
+Framework and assertion engine are newest on PyPI, ignoring the upper bounds in
+`pyproject.toml`, so a release that breaks the library shows up here rather than in your
+suite.
 
 ## License
-MIT
+
+[MIT](LICENSE)
