@@ -7,6 +7,38 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Robot Framework 5.0 and later are supported, and Python 3.10 and later, where before the
+  constraints allowed only Robot Framework 7.3+ on Python 3.12+. The library needed no
+  change for this: everything it imports from `robot` other than `Secret` predates 5.0,
+  `Secret` was already imported conditionally, and the keyword annotations are ones 5.0
+  converts. The pins were the only thing keeping older versions out.
+
+  On 5.0 through 6.0 the assertion engine has to be 2.x, because its 3.x line requires
+  Robot Framework 6.1.1. `verify_assertion` and `AssertionOperator` are identical across
+  every line, so the assertion keywords behave the same either way. The dependency now
+  allows `>=2.0,<6` and pip resolves the pairing.
+
+  The upper end of that range matters as much as the lower: the previous `^3.0.3` excluded
+  the assertion engine's current 4.x and 5.x lines, which work, and which other Robot
+  Framework libraries depend on — installing this library alongside Browser would have
+  been an unsatisfiable conflict.
+
+  Robot Framework 4 and older remain unsupported: the assertion engine will not install
+  below 5, and 4 does not convert built-in generic annotations such as `list[str]`.
+
+  The only behavioural difference below 7.4 is that `db_password` and `db_conn_string`
+  take a plain string, since `Secret` does not exist there. See "Older Robot Framework
+  Versions" in README.md.
+
+### Fixed
+
+- The unit test file covering the keywords ran no tests at all on Robot Framework 7.3 and
+  older. A module-level `pytest.importorskip` for the `Secret` type raised at import, so
+  the whole file — 126 tests, of which 8 concern `Secret` — was skipped and reported as a
+  single skip. The `Secret` tests now skip individually.
+
 ### Added
 
 - `db_password` and `db_conn_string` accept a Robot Framework `Secret`, so the value is
@@ -16,8 +48,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   accident. A connection string embeds its password, so giving that as a `Secret` hides
   the whole string.
 
-  This needs Robot Framework 7.4, which introduced the type. The supported floor stays at
-  7.3, where there is no `Secret` to accept and no way for a suite to produce one, so the
+  This needs Robot Framework 7.4, which introduced the type. On every older supported
+  version there is no `Secret` to accept and no way for a suite to produce one, so the
   arguments behave exactly as before.
 
   Passing a `Secret` previously failed with `got value '<secret>' (Secret) that cannot be

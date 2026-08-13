@@ -82,6 +82,41 @@ SCRAM-SHA-1 credentials rejects `SCRAM-SHA-256` with `bad auth`, and Atlas users
 some time ago are often exactly that. The container's user is SCRAM-SHA-256. Leave the
 variable empty and the test that pins a mechanism skips.
 
+### Supporting Older Robot Framework Versions
+
+The library supports Robot Framework 5.0 through 7.x, so a change has to keep working on
+all of them. Two things follow from that when writing code here:
+
+- **Anything from `robot` that arrived after 5.0 must be imported conditionally**, the way
+  `Secret` is in `MongoDBLibrary/keywords.py` — imported in a `try`, with the keyword's
+  behaviour on the older version staying what it was. A plain import of a newer API breaks
+  the library at import time for everyone below that version.
+- **Keyword annotations must be ones 5.0 converts.** Built-in generics (`list[str]`,
+  `dict[str, Any]`), `Optional` and `Union` are all fine; a newer conversion feature is
+  not, and libdoc in the version matrix is what catches it.
+
+The `unit-test-robot-framework-range` job runs the unit tests and libdoc against 5.0.1,
+6.1.1, 7.3.2 and 7.4.0. It installs with pip from explicit pins rather than
+`poetry install`, because the lock file exists to pin one development environment and would
+defeat the point.
+
+`unit-test-robot-framework-latest` covers the opposite end: it upgrades past the upper
+bounds in `pyproject.toml` to whatever is newest on PyPI, so an upstream release that
+breaks the library is found nightly instead of by a user. It is `continue-on-error` and
+skipped on pull requests, since it can go red for a reason unrelated to the change under
+test. When it does go red, read its "Report the resolved versions" step first — it names
+the version that broke — and fix the library or lower the upper bound.
+
+Unit tests that need a newer Robot Framework should skip rather than fail — see
+`needs_secret` in `utest/test_keywords.py`. Use `pytest.mark.skipif` on the tests, not a
+module-level `pytest.importorskip`: that raises at import and silently skips the entire
+file, which is how the Secret tests once took 126 unrelated tests out of the floor job.
+
+The acceptance suites are exempt. They use `VAR` (7.0 syntax), and the robocop formatter
+configured in `pyproject.toml` rewrites assignments into it, so they run only on the
+newest version. They cover the driver against a real server, which does not vary by
+Robot Framework version.
+
 ### Continuous Integration
 
 CI runs the acceptance suite twice, against two different things:
@@ -136,12 +171,30 @@ Unit tests are located in the `utest` directory. To run them, use the following 
 poetry run pytest utest
 ```
 
+To check a change against the oldest supported Robot Framework, as CI does, install into a
+throwaway virtual environment rather than the Poetry one — the lock file pins the newest
+version:
+
+```bash
+python -m venv /tmp/rf-floor
+/tmp/rf-floor/bin/pip install . pytest pytest-mock mongomock \
+  "robotframework==5.0.1" "robotframework-assertion-engine==2.0.0"
+/tmp/rf-floor/bin/python -m pytest utest
+/tmp/rf-floor/bin/python -m robot.libdoc MongoDBLibrary /tmp/libdoc-check.html
+```
+
+Expect the `Secret` tests to skip there and every other test to run.
+
 ### Running Acceptance Tests
 
 Acceptance tests are located in the `atest` directory. To run them, use the following command:
 ```bash
 poetry run robot atest
 ```
+
+These need Robot Framework 7.0 or later — they use `VAR`, and the formatter configured
+here rewrites assignments into it. There is no need to run them against an older version;
+see [Supporting Older Robot Framework Versions](#supporting-older-robot-framework-versions).
 
 Ensure that the `local.resource` file is properly configured before running the tests.
 
