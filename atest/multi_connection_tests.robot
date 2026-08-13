@@ -31,6 +31,32 @@ Verify Switch Database Changes The Connection Used By Later Keywords
     Should Be Equal As Integers                      ${in_first}     0
     [Teardown]    Switch Database                    alias=first_alias
 
+Verify Switch Connection Changes The Connection Used By Later Keywords
+    [Documentation]    The keyword named for what it does, which until now was only ever
+    ...    reached through the deprecated Switch Database alias.
+    ${before}                   Get Active Alias
+    Should Be Equal             ${before}           first_alias
+    Switch Connection           alias=second_alias
+    ${after}                    Get Active Alias
+    Should Be Equal             ${after}            second_alias
+    Insert Document             collection_name=${COLLECTION}    document={"unique_id": "test_switch_connection"}
+    ${in_second}                Count Documents
+    ...                         collection_name=${COLLECTION}
+    ...                         alias=second_alias
+    ...                         unique_id=test_switch_connection
+    ${in_first}                 Count Documents
+    ...                         collection_name=${COLLECTION}
+    ...                         alias=first_alias
+    ...                         unique_id=test_switch_connection
+    Should Be Equal As Integers                      ${in_second}    1
+    Should Be Equal As Integers                      ${in_first}     0
+    [Teardown]    Switch Connection                  alias=first_alias
+
+Verify Switch Connection Rejects An Alias That Is Not Connected
+    [Documentation]    The failure has to name the alias rather than raise a bare KeyError.
+    Run Keyword And Expect Error                     *Connection with alias 'never_connected' is not connected.*
+    ...    Switch Connection    alias=never_connected
+
 Verify A Document Is Found By Its Id As A String
     [Documentation]    Coercion is on by default, so an id that has been through a Robot
     ...    variable still matches the ObjectId stored in the database.
@@ -108,6 +134,16 @@ Verify Check Query Result Honours Retry Timeout
     ...    retry_timeout=1 second
     ...    retry_pause=200 milliseconds
     ...    alias=first_alias
+
+Verify Keywords Report An Alias That Is Not Connected
+    [Documentation]    Every keyword resolves its alias the same way, so an unknown one
+    ...    must be reported the same actionable way rather than as a bare KeyError.
+    Run Keyword And Expect Error                     *Alias 'never_connected' not found in connection pool.*
+    ...    Count Documents      collection_name=${COLLECTION}    alias=never_connected
+    Run Keyword And Expect Error                     *No database connection exists for alias 'never_connected'.*
+    ...    Check If Database Connection Exists       alias=never_connected
+    Run Keyword And Expect Error                     *Connection with alias 'never_connected' is not connected.*
+    ...    Disconnect From Database                  alias=never_connected
 
 Verify Disconnect From All Databases Releases The Whole Pool
     [Documentation]    Closing every pooled connection must not fail on the Database API.

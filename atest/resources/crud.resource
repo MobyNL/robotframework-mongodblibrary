@@ -6,6 +6,7 @@ Documentation       Shared steps for the CRUD suites.
 ...                 ${DELETE_ALL_COLLECTION}. Everything else is identical between them,
 ...                 so it lives here rather than being duplicated per suite.
 
+Library             Collections
 Library             MongoDBLibrary
 Resource            ../local.resource
 
@@ -119,6 +120,83 @@ Count Documents Should Count The Matching Documents
     ...    unique_id=test_count
     ...    alias=${alias}
     Should Be Equal As Integers    ${count}    1
+
+Get Distinct Values Should Return Each Value Once
+    [Documentation]    Distinct collapses repeated values across the matching documents.
+    [Arguments]    ${alias}
+    FOR    ${status}    IN    new    new    shipped
+        Insert Document
+        ...    collection_name=${COLLECTION}
+        ...    document={"unique_id": "test_distinct", "status": "${status}"}
+        ...    alias=${alias}
+    END
+    ${statuses}    Get Distinct Values
+    ...    collection_name=${COLLECTION}
+    ...    field=status
+    ...    query={"unique_id": "test_distinct"}
+    ...    alias=${alias}
+    ${statuses}    Evaluate    sorted($statuses)
+    Should Be Equal    ${statuses}    ${{ ['new', 'shipped'] }}
+
+Replace Document Should Remove The Fields It Does Not Mention
+    [Documentation]    Replacing swaps the whole document, unlike an update that merges.
+    [Arguments]    ${alias}
+    Insert Document
+    ...    collection_name=${COLLECTION}
+    ...    document={"unique_id": "test_replace", "stale": "gone"}
+    ...    alias=${alias}
+    ${replaced}    Replace Document
+    ...    collection_name=${COLLECTION}
+    ...    query={"unique_id": "test_replace"}
+    ...    replacement={"unique_id": "test_replace"}
+    ...    alias=${alias}
+    Dictionary Should Not Contain Key    ${replaced}    stale
+
+Update Document Should Insert When Upserting Against No Match
+    [Documentation]    Upserting twice must leave one document, not two.
+    [Arguments]    ${alias}
+    FOR    ${_}    IN RANGE    2
+        Update Document
+        ...    collection_name=${COLLECTION}
+        ...    query={"unique_id": "test_upsert"}
+        ...    update={"checked": True}
+        ...    upsert=${True}
+        ...    alias=${alias}
+    END
+    ${count}    Count Documents
+    ...    collection_name=${COLLECTION}
+    ...    unique_id=test_upsert
+    ...    alias=${alias}
+    Should Be Equal As Integers    ${count}    1
+
+Delete Document And Return It Should Give Back What It Deleted
+    [Documentation]    One operation, so nothing can change between reading and deleting.
+    [Arguments]    ${alias}
+    Insert Document
+    ...    collection_name=${COLLECTION}
+    ...    document={"unique_id": "test_delete_return", "payload": 42}
+    ...    alias=${alias}
+    ${deleted}    Delete Document And Return It
+    ...    collection_name=${COLLECTION}
+    ...    unique_id=test_delete_return
+    ...    alias=${alias}
+    Should Be Equal As Integers    ${deleted.payload}    42
+    Document Should Not Exist
+    ...    collection_name=${COLLECTION}
+    ...    unique_id=test_delete_return
+    ...    alias=${alias}
+
+Document Existence Assertions Should Agree With The Data
+    [Documentation]    The two existence assertions over a document that is there and one that is not.
+    [Arguments]    ${alias}
+    Document Should Exist
+    ...    collection_name=${COLLECTION}
+    ...    unique_id=test_find
+    ...    alias=${alias}
+    Document Should Not Exist
+    ...    collection_name=${COLLECTION}
+    ...    unique_id=never_inserted
+    ...    alias=${alias}
 
 Delete All Documents Should Empty The Collection
     [Documentation]    Deleting everything leaves the collection empty.
