@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "robotframework-mongodb"
-version = "1.1.0"
+version = "1.2.0"
 description = "MongoDB test library for Robot Framework."
 authors = ["MobyNl <markmoberts@gmail.com>"]
 readme = "README.md"
