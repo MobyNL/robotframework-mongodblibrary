@@ -25,6 +25,7 @@ class MongoDBLibrary(DynamicCore):
     - Usage
     - Object Ids
     - Documents From Files
+    - Diagnosing An Empty Result
     - Resetting Between Tests
     - Writing A Fixture That Can Run Twice
     - Hosted Clusters
@@ -253,6 +254,58 @@ class MongoDBLibrary(DynamicCore):
     nor a field fails naming both, because which was meant decides whether the fix belongs
     in the file or in the call.
 
+    == Diagnosing An Empty Result ==
+
+    A query that matches nothing and reports no error is this library's most common
+    failure, and `Object Ids` covers only one cause of it. `Explain Query` covers the
+    rest: it asks the server how it answered the query and returns a summary of the plan,
+    including ``index_bounds`` — the values it actually searched for.
+
+    | ${plan}    Explain Query    collection_name=readings    _id.deviceId=${device_id}    _id.date=${date}
+    | Log    ${plan.index_bounds}
+
+    It asserts nothing and is not meant to stay in a passing test. Put it beside the find
+    keyword that returned nothing, read the log, and take it out again.
+
+    === A compound id ===
+
+    A collection whose ``_id`` is a subdocument rather than a single value produces three
+    silent empty results at once, and they are worth naming because none of them errors.
+
+    | {"_id": {"deviceId": "device-1", "date": ISODate("2026-01-08T00:00:00.001Z")}}
+
+    First, the automatic ``_id_`` index cannot answer a query on part of that id. It
+    indexes the whole subdocument as one opaque value, so ``_id.deviceId`` and ``_id.date``
+    are served by a separate index if one exists and by reading every document if not. The
+    index is invisible in the suite that depends on it, which is what
+    `Collection Should Have Index` is for:
+
+    | Collection Should Have Index    collection_name=readings    keys={"_id.deviceId": 1, "_id.date": 1}
+
+    Second, matching the whole ``_id`` at once compares the stored BSON, so the *order* of
+    the fields is part of the value. These are two different queries and the second one
+    matches nothing:
+
+    | query={"_id": {"deviceId": "device-1", "date": ${date}}}    # matches
+    | query={"_id": {"date": ${date}, "deviceId": "device-1"}}    # matches nothing
+
+    Third, a date compares exactly. A ``datetime`` at midnight does not match a document
+    stored with milliseconds, which is the difference ``index_bounds`` shows:
+
+    | '_id.date': ['[new Date(1767830400000), new Date(1767830400000)]']
+
+    Comparing that with what the suite passed is the whole diagnosis.
+
+    === Reading the summary ===
+
+    ``collection_scan`` says whether the plan read the collection rather than an index.
+    Treat it as information for a person, never as something to assert on: MongoDB
+    correctly chooses a scan on a small collection, where reading it beats an index lookup
+    plus a fetch, so an assertion that no scan happens passes against production-sized
+    data and fails against a freshly seeded test collection with nothing wrong. When a
+    suite needs an index to exist, `Collection Should Have Index` says so directly and
+    cannot flake, because it reads the collection's index definitions rather than a plan.
+
     == Resetting Between Tests ==
 
     There are two ways to clear a collection and they are not interchangeable.
@@ -395,6 +448,10 @@ class MongoDBLibrary(DynamicCore):
       taking the same free query parameters as `Find Document`.
     - `Check Collection Exists` and `Check Index Exists` — for asserting that a migration
       or an application's start-up created what it was supposed to.
+    - `Collection Should Have Index` — the same question about an index asked by its
+      fields rather than its name, which is what a suite's queries actually depend on.
+      See `Diagnosing An Empty Result`.
+
     === Retrying ===
 
     Every assertion keyword retries a failing assertion until ``retry_timeout`` elapses,
@@ -432,12 +489,16 @@ class MongoDBLibrary(DynamicCore):
 
     The keywords cover what a test suite normally needs, which is a small part of what
     MongoDB can do. `Run Database Command` reaches the rest — server statistics, storage
-    sizes, query plans and the administrative commands are all database commands, and
-    there are far too many to give each a keyword:
+    sizes and the administrative commands are all database commands, and there are far too
+    many to give each a keyword:
 
     | ${stats}    Run Database Command    command={"collStats": "orders"}
-    | ${plan}     Run Database Command    command={"explain": {"find": "orders", "filter": {"status": "new"}}}
     | ${info}     Run Database Command    command={"listCollections": 1}
+
+    A find is explained by `Explain Query` rather than here; this is the way to explain
+    something else, such as an aggregation pipeline:
+
+    | ${plan}    Run Database Command    command={"explain": {"aggregate": "orders", "pipeline": [], "cursor": {}}}
 
     A command written as a document is read as one; anything else is sent as a bare
     command name, so ``command=ping`` works too.

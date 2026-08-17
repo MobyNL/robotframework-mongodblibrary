@@ -18,6 +18,7 @@ every keyword, its arguments and examples.
 - [Resetting Between Tests](#resetting-between-tests)
 - [Waiting For Data](#waiting-for-data)
 - [Document Ids](#document-ids)
+- [Diagnosing An Empty Result](#diagnosing-an-empty-result)
 - [Connecting To A Hosted Cluster (MongoDB Atlas)](#connecting-to-a-hosted-cluster-mongodb-atlas)
 - [Using With AWS](#using-with-aws)
 - [Beyond These Keywords](#beyond-these-keywords)
@@ -34,7 +35,9 @@ every keyword, its arguments and examples.
 - Collection and database management: create, drop, list
 - Index creation, listing and dropping, including unique, sparse and TTL indexes
 - Retrying assertions on a query result, a document count, a set of values, or the
-  existence of a document, a collection or an index
+  existence of a document, a collection or an index — by its fields as well as its name
+- `Explain Query` for the query that returns nothing and reports no error: the plan the
+  server chose, and the values it actually searched for
 - `Run Database Command` for everything the keywords do not wrap
 - Runs on Robot Framework 5.0 through 7.x, from one code path
 
@@ -233,6 +236,64 @@ Query An Id Explicitly
 
 Full details, including exactly what is and is not rewritten, are in the `Object Ids`
 section of the [keyword documentation](https://mobynl.github.io/robotframework-mongodblibrary/).
+
+## Diagnosing An Empty Result
+
+An id that does not match is one cause of a query that finds nothing and errors on
+nothing. `Explain Query` covers the rest: it asks the server how it answered the query,
+and the field to read first is `index_bounds` — the values it actually searched for.
+
+```robotframework
+*** Test Cases ***
+Find Out Why The Document Is Missing
+    ${plan}    Explain Query    collection_name=readings    _id.deviceId=${device_id}    _id.date=${date}
+    Log    ${plan.index_bounds}
+```
+
+```
+'_id.deviceId': ['["device-1", "device-1"]']
+'_id.date':     ['[new Date(1767830400000), new Date(1767830400000)]']
+```
+
+Comparing that with what the suite passed is usually the whole diagnosis. The keyword
+asserts nothing and is not meant to stay in a passing test: put it beside the find that
+returned nothing, read the log, take it out again.
+
+### A compound `_id`
+
+A collection keyed by a subdocument rather than a single value hits three of these at
+once, and none of them errors:
+
+```
+{"_id": {"deviceId": "device-1", "date": ISODate("2026-01-08T00:00:00.001Z")}}
+```
+
+1. **The automatic `_id_` index cannot answer a query on part of the id.** It stores the
+   subdocument as one opaque value, so `_id.deviceId` and `_id.date` are served by a
+   separate index if one exists, and by reading every document if not. Nothing in the
+   suite says that index is load-bearing, so assert it:
+
+   ```robotframework
+   Collection Should Have Index    collection_name=readings    keys={"_id.deviceId": 1, "_id.date": 1}
+   ```
+
+2. **Matching the whole `_id` is field-order sensitive.** It compares the stored BSON, so
+   the order of the fields is part of the value:
+
+   ```robotframework
+   query={"_id": {"deviceId": "device-1", "date": ${date}}}    # matches
+   query={"_id": {"date": ${date}, "deviceId": "device-1"}}    # matches nothing, silently
+   ```
+
+3. **A date compares exactly.** A `datetime` at midnight does not match a document stored
+   with milliseconds — which is exactly what the `index_bounds` above make visible.
+
+`Explain Query` also reports `collection_scan`, and it is deliberately *information*
+rather than an assertion. MongoDB rightly chooses a collection scan on a small collection,
+where reading it beats an index lookup plus a fetch, so "this query must not scan" passes
+against production-sized data and fails against a freshly seeded test collection with
+nothing wrong. Where a suite needs an index, `Collection Should Have Index` says so
+directly and cannot flake.
 
 ## Documents From Files
 
