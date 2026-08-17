@@ -1,4 +1,5 @@
 from importlib.metadata import PackageNotFoundError, version
+from typing import Optional
 
 from robotlibcore import DynamicCore
 
@@ -23,6 +24,7 @@ class MongoDBLibrary(DynamicCore):
     - Introduction
     - Usage
     - Object Ids
+    - Documents From Files
     - Resetting Between Tests
     - Writing A Fixture That Can Run Twice
     - Hosted Clusters
@@ -111,6 +113,145 @@ class MongoDBLibrary(DynamicCore):
 
     With the option off, nothing about your queries is altered and passing a string
     ``_id`` against an ObjectId-keyed collection will silently match nothing again.
+
+    == Documents From Files ==
+
+    A fixture document written into a suite is fine until a second test needs it. Then it
+    is copied, and the two copies drift. `Load Document` reads one from a JSON file
+    instead, and `Insert Document From File` reads it and inserts it in one step:
+
+    | Library    MongoDBLibrary    document_path=${CURDIR}/documents
+
+    | ${document}    Load Document    order.json
+    | ${doc_id}      Insert Document From File    collection_name=orders    path=order.json
+
+    ``document_path`` only removes the repetition of naming the directory in every call. A
+    path given to the keyword is used as written whether it is set or not, so
+    ``Load Document    ${CURDIR}/documents/order.json`` works without it.
+
+    === Extended JSON ===
+
+    The file is read as MongoDB Extended JSON, which is how MongoDB itself writes types
+    that JSON has no syntax for. So a document id in a file is a real ``ObjectId`` and a
+    timestamp is a real ``datetime``:
+
+    | {
+    |     "_id": {"$oid": "6a7ccdea6abf6a4ebbc3514f"},
+    |     "placedAt": {"$date": "2026-03-01T09:30:00Z"},
+    |     "quantity": {"$numberInt": "3"},
+    |     "total": {"$numberDouble": "42.50"},
+    |     "status": "new",
+    |     "lines": [{"sku": "A-1", "quantity": 2}]
+    | }
+
+    This matters for exactly the reason `Object Ids` describes: a string that looks like an
+    id does not match one, and a date written as text is stored as text and does not
+    compare as a date. Plain JSON values are left as the types they already are, so only
+    the fields that need a BSON type are written this way.
+
+    MongoDB's update operators start with ``$`` as well, and are not affected — they are
+    passed through as they are, nested values included. A file can therefore hold an
+    update rather than a document:
+
+    | {"$set": {"status": "shipped", "shippedAt": {"$date": "2026-03-02T00:00:00Z"}}}
+
+    | ${update}    Load Document    ship.json
+    | Update Documents With Operators    collection_name=orders    query={"status": "new"}    update=${update}
+
+    === Suite variables ===
+
+    ``${...}`` in the file is replaced from the variables the calling suite can see, so a
+    value the whole suite shares is written in one place:
+
+    | {"email": "${EMAIL}", "signedUpAt": {"$date": "${SIGNED_UP_AT}"}}
+
+    A variable that resolves to nothing fails the keyword, naming the file and the
+    variable. That is the point of substituting here rather than in the suite: a document
+    that kept the literal text ``${EMAIL}`` inserts perfectly well, and the test then fails
+    somewhere later against data that looks almost right.
+
+    === Filling a template ===
+
+    A value that differs on *every* call belongs in the call, not in a suite variable. A
+    file can declare a hole for one, written ``{name}`` and filled from the keyword's named
+    arguments:
+
+    | {
+    |     "unique_id": "{unique_id}",
+    |     "customerId": "{customerId}",
+    |     "placedAt": "{placed_at}",
+    |     "quantity": "{quantity}",
+    |     "reference": "REF-{unique_id}",
+    |     "status": "new"
+    | }
+
+    | ${document}    Load Document    order.json    unique_id=order-1    customerId=${oid}
+    | ...            placed_at=${now}    quantity=3
+
+    The template stays valid JSON, so an editor, ``jq`` and a formatter still read it. A
+    dictionary can be expanded into the arguments with ``&{placeholders}``, and an empty one
+    fills nothing.
+
+    Two different holes, then, and the syntax says which is which: ``${name}`` comes from
+    the suite, ``{name}`` from the call.
+
+    As for what a filled value becomes: a string that is *exactly* one placeholder is
+    replaced whole, quotes included, by the
+    value's own Extended JSON form. That is what lets a valid-JSON template carry something
+    JSON cannot write, and it means no ``$oid`` or ``$date`` wrapper is needed for a value
+    that already is one:
+
+    | "customerId": "{customerId}"    with an ObjectId    ->    a real ObjectId
+    | "placedAt": "{placed_at}"       with a datetime     ->    a real datetime
+    | "quantity": "{quantity}"        with 3              ->    a real int
+
+    A value written literally is read the way the file's own values are, so ``quantity=3``
+    is a number and ``status=shipped`` is text. A placeholder inside a longer string, as in
+    ``"REF-{unique_id}"``, is interpolated as text instead. Where a document genuinely
+    holds braces in a string, ``{{`` and ``}}`` are literal ones, as in Python's
+    ``str.format``; JSON's own braces are never touched.
+
+    A placeholder the file declares and no argument fills is an error, naming the file and
+    the holes, for the same reason an unresolved ``${...}`` is: the literal text
+    ``{unique_id}`` is a perfectly insertable string.
+
+    === Overriding fields ===
+
+    A field the file already fills can be changed without the file declaring a hole for it,
+    which is what a value that varies only *occasionally* wants — the file's own value stays
+    as the default for every test that does not mention it. Any field can be overridden by
+    its path, and a list position is written as a number:
+
+    | ${document}    Load Document    order.json    status=shipped    lines.0.quantity=3
+    | ${document}    Load Document    order.json    customer._id=${customer_id}
+
+    This is the part a suite cannot do for itself. Robot Framework's ``&{dict}`` expansion
+    merges one level deep, so overriding a nested field means rebuilding every level above
+    it by hand.
+
+    A value written literally is read the way the file's own values are: ``0.8`` is a
+    number, ``${True}`` and ``true`` are booleans, ``{"$oid": "..."}`` is an ObjectId, and
+    a word such as ``shipped`` is the text it looks like. A value given as a variable is
+    used as it is.
+
+    Every step of a path has to exist in the document already. A path that does not fails
+    with what the document held at that point, because a path that misses is a typo far
+    more often than it is a field meant to be added — and a silent insert would leave the
+    document with both the misspelled field and the original one.
+
+    === Which one an argument is ===
+
+    Placeholders and overrides are given the same way, and the file decides which an
+    argument is: a name the file declares as a placeholder fills it, and anything else is a
+    path into the document.
+
+    | ${document}    Load Document    order.json    unique_id=order-1    status=shipped    lines.0.quantity=3
+    | #                                            a hole the file       a field it        a nested field
+    | #                                            declares             already fills
+
+    A dotted name can only ever have been a path. A bare one that is neither a placeholder
+    nor a field fails naming both, because which was meant decides whether the fix belongs
+    in the file or in the call.
 
     == Resetting Between Tests ==
 
@@ -254,7 +395,6 @@ class MongoDBLibrary(DynamicCore):
       taking the same free query parameters as `Find Document`.
     - `Check Collection Exists` and `Check Index Exists` — for asserting that a migration
       or an application's start-up created what it was supposed to.
-
     === Retrying ===
 
     Every assertion keyword retries a failing assertion until ``retry_timeout`` elapses,
@@ -311,18 +451,24 @@ class MongoDBLibrary(DynamicCore):
     # Read from the installed package so the version lives in pyproject.toml only.
     ROBOT_LIBRARY_VERSION = __version__
 
-    def __init__(self, coerce_object_ids: bool = True) -> None:
+    def __init__(self, coerce_object_ids: bool = True, document_path: Optional[str] = None) -> None:
         """Initializes the MongoDB Library.
 
         Arguments:
         - ``coerce_object_ids``: Whether a string ``_id`` in a query is converted to a
           BSON ObjectId, on by default. See `Object Ids` for exactly what this rewrites,
           why it is on, and the one case in which you want it off.
+        - ``document_path``: Directory that documents given to `Load Document` and
+          `Insert Document From File` by file name are looked up in. It saves naming the
+          directory in every call and does nothing else: a path given to the keyword is
+          used as written whether this is set or not. See `Documents From Files`.
 
         | Library    MongoDBLibrary
         | Library    MongoDBLibrary    coerce_object_ids=${False}
+        | Library    MongoDBLibrary    document_path=${CURDIR}/documents
 
         """
         self.connection_manager = ConnectionManager()
-        libraries = [MongoDBKeywords(self.connection_manager, coerce_object_ids=coerce_object_ids)]
+        libraries = [MongoDBKeywords(self.connection_manager, coerce_object_ids=coerce_object_ids,
+                                     document_path=document_path)]
         DynamicCore.__init__(self, libraries)

@@ -1,5 +1,6 @@
 import time
 from ast import literal_eval
+from pathlib import Path
 from typing import Any, Callable, cast, Optional, TYPE_CHECKING, Union
 
 from assertionengine import AssertionOperator, verify_assertion
@@ -13,6 +14,11 @@ from robot.libraries.BuiltIn import BuiltIn
 from robot.utils import DotDict, timestr_to_secs
 
 from MongoDBLibrary.connection_pool import ConnectionManager
+from MongoDBLibrary.documents import (
+    build_document,
+    resolve_document_file,
+    substitute_variables,
+)
 
 try:  # Robot Framework 7.4 and later
     from robot.api.types import Secret
@@ -40,7 +46,8 @@ class MongoDBKeywords:
     This class contains Robot Framework keywords for MongoDB operations.
     """
 
-    def __init__(self, connection_manager: ConnectionManager, coerce_object_ids: bool = True):
+    def __init__(self, connection_manager: ConnectionManager, coerce_object_ids: bool = True,
+                 document_path: Optional[str] = None):
         """
         Initializes the MongoDBKeywords library.
 
@@ -48,9 +55,11 @@ class MongoDBKeywords:
         - ``connection_manager``: Manages connections to MongoDB.
         - ``coerce_object_ids``: Whether a string ``_id`` in a query is converted to an
           ObjectId.
+        - ``document_path``: Directory that documents given by file name are looked up in.
         """
         self.connection_manager = connection_manager
         self.coerce_object_ids = coerce_object_ids
+        self.document_path = Path(document_path) if document_path else None
 
     # ----------------------------------------------------------------- #
     # Internals
@@ -491,6 +500,66 @@ class MongoDBKeywords:
         return ObjectId(value)
 
     # ----------------------------------------------------------------- #
+    # Documents from files
+    # ----------------------------------------------------------------- #
+
+    @keyword
+    def load_document(self, path: str, **arguments: Any) -> dict:
+        """
+        Read a document from a JSON file, ready to insert or to update with.
+
+        The file is MongoDB Extended JSON, so it can hold the types MongoDB stores rather
+        than only what plain JSON can express. See `Documents From Files` for the whole
+        picture; the short version is that the file is read in four steps:
+
+        1. ``${...}`` variables are replaced from the ones the calling suite can see, so a
+           value shared by a whole suite is written once. One that resolves to nothing
+           fails the keyword.
+        2. ``{...}`` placeholders are filled from this keyword's named arguments, so a
+           value that differs on every call is given at the call. One that is left
+           unfilled fails the keyword.
+        3. ``$oid``, ``$date``, ``$numberInt`` and ``$numberDouble`` become ``ObjectId``,
+           ``datetime``, ``int`` and ``float``. Plain JSON values keep their own types,
+           and MongoDB's ``$``-prefixed update operators are left alone, so an update
+           document works here as well as a document to insert.
+        4. Any argument that is not a placeholder is written in as a dotted override path.
+
+        Arguments:
+        - ``path``: File name, resolved against the ``document_path`` given at import, or
+          a path, used as written.
+        - ``arguments``: A value for each ``{placeholder}`` the file declares, and a dotted
+          path to a value for each field to override. Which one an argument is depends on
+          the file: a name it declares as a placeholder fills that placeholder, and
+          anything else is a path. ``ingredients.0`` is the first item of a list, so one
+          syntax covers objects and lists both. Every step of an override path has to exist
+          in the document: a path that does not is a typo far more often than it is a field
+          meant to be added, and it fails with what the document did hold at that point.
+
+        Returns:
+        - The document, as a dictionary whose fields Robot Framework can reach with
+          ``${document.field}``.
+
+        Example:
+        | ${document}    Load Document    order.json
+        | ${document}    Load Document    order.json    unique_id=order-1    customerId=${customer_id}
+        | ${document}    Load Document    order.json    &{placeholders}
+        | ${document}    Load Document    order.json    status=shipped    lines.0.quantity=3
+        | ${doc_id}      Insert Document    collection_name=orders    document=${document}
+
+        A dictionary given as ``&{placeholders}`` is expanded into named arguments by Robot
+        Framework, so an empty one fills nothing and the file's own values stand.
+
+        See `Insert Document From File` for the last two lines written as one keyword.
+
+        """
+        document_file = resolve_document_file(path, self.document_path)
+        text = document_file.read_text(encoding="utf-8")
+        substituted = substitute_variables(text, document_file.name)
+        document = build_document(substituted, arguments, document_file.name)
+        logger.debug(f"Loaded document from '{document_file}': {document!r}")
+        return cast(dict, self._as_dot_dict(document))
+
+    # ----------------------------------------------------------------- #
     # Inserting
     # ----------------------------------------------------------------- #
 
@@ -541,6 +610,39 @@ class MongoDBKeywords:
         """
         collection = self._get_collection(collection_name, alias)
         return collection.insert_many(documents, ordered=ordered).inserted_ids
+
+    @keyword
+    def insert_document_from_file(self, collection_name: str, path: str, alias: Optional[str] = None,
+                                  **arguments: Any) -> Any:
+        """
+        Insert a document read from a JSON file, which is `Load Document` and
+        `Insert Document` in one step.
+
+        Seeding from a file and inserting it is the shape a fixture almost always wants,
+        and the document itself is rarely worth a variable. Take it in two keywords
+        instead when the same document is inserted more than once, or when the test needs
+        the document as well as what was stored.
+
+        Arguments:
+        - ``collection_name``: Name of the collection where the document will be inserted.
+        - ``path``: File name or path, resolved exactly as `Load Document` resolves it.
+        - ``alias``: Alias of the connection (optional, defaults to the active alias).
+        - ``arguments``: Placeholder values and dotted override paths, as `Load Document`
+          takes them. A placeholder or field genuinely named ``collection_name``, ``path``
+          or ``alias`` cannot be given here, since those name this keyword's own arguments;
+          use `Load Document` and `Insert Document` for that document.
+
+        Returns:
+        - The ID of the inserted document, as `Insert Document` returns it.
+
+        Example:
+        | ${doc_id}    Insert Document From File    collection_name=orders    path=order.json
+        | ${doc_id}    Insert Document From File    collection_name=orders    path=order.json    unique_id=order-1
+        | ${doc_id}    Insert Document From File    collection_name=orders    path=order.json    status=shipped
+
+        """
+        document = self.load_document(path, **arguments)
+        return self.insert_document(collection_name, document, alias)
 
     # ----------------------------------------------------------------- #
     # Reading

@@ -1,0 +1,14 @@
+{
+    "unique_id": "test_document_file",
+    "customerId": {"$oid": "6a7ccdea6abf6a4ebbc3514f"},
+    "placedAt": {"$date": "2026-03-01T09:30:00Z"},
+    "quantity": {"$numberInt": "3"},
+    "total": {"$numberDouble": "42.50"},
+    "status": "new",
+    "reference": "${ORDER_REFERENCE}",
+    "customer": {"name": "A", "address": {"city": "Utrecht"}},
+    "lines": [
+        {"sku": "A-1", "quantity": 2},
+        {"sku": "B-2", "quantity": 1}
+    ]
+}
