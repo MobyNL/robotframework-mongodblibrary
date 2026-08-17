@@ -1,6 +1,7 @@
 """Tests for reading documents from files: Load Document and Insert Document From File."""
 
 import datetime
+import re
 
 import pytest
 from bson import ObjectId
@@ -139,14 +140,19 @@ def test_update_operators_are_passed_through(loader, write):
 
 
 def test_invalid_json_reports_the_file_with_the_line_and_column(loader, write):
+    """Where the position points is Python's business, so only that there is one is asserted.
+
+    Python 3.13 rewrote the decoder's messages: a trailing comma is now reported at the
+    comma itself rather than at the token that followed it, so pinning the numbers would
+    pin the interpreter version instead of the behaviour.
+    """
     write("order.json", '{\n    "status": "new",\n}')
 
     with pytest.raises(ValueError) as error:
         loader.load_document("order.json")
 
     assert "order.json" in str(error.value)
-    assert "line 3" in str(error.value)
-    assert "column 1" in str(error.value)
+    assert re.search(r"at line \d+ column \d+\.$", str(error.value))
 
 
 def test_a_value_extended_json_cannot_read_surfaces_its_own_error(loader, write):
