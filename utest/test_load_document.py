@@ -406,6 +406,43 @@ def test_suite_variables_are_substituted_before_placeholders_are_filled(loader, 
     assert document == {"email": "a@example.test", "note": "${NOT_A_VARIABLE}"}
 
 
+def test_braces_from_a_variables_value_are_data(loader, write, suite_variables):
+    """A placeholder is something the file says, so a value that holds braces holds text.
+
+    Substitution runs first, so without this the value would be scanned as a template and
+    the keyword would fail on a hole the file never declared.
+    """
+    suite_variables["${GREETING}"] = "Hi {first_name}"
+    write("order.json", '{"note": "${GREETING}"}')
+
+    assert loader.load_document("order.json") == {"note": "Hi {first_name}"}
+
+
+def test_braces_from_a_variables_value_are_not_filled_by_an_argument(loader, write, suite_variables):
+    """Even when an argument happens to be named after them, so the order cannot be used.
+
+    The name is no argument of the file's, so it is read as an override path instead,
+    which is what names the mistake.
+    """
+    suite_variables["${GREETING}"] = "Hi {first_name}"
+    write("order.json", '{"note": "${GREETING}"}')
+
+    with pytest.raises(ValueError) as error:
+        loader.load_document("order.json", first_name="Ada")
+
+    assert "'first_name' is neither" in str(error.value)
+
+
+def test_a_placeholder_the_file_declares_is_still_filled_after_substitution(loader, write, suite_variables):
+    """The regression the two tests above must not cause."""
+    suite_variables["${EMAIL}"] = "a@example.test"
+    write("order.json", '{"email": "${EMAIL}", "status": "{status}"}')
+
+    document = loader.load_document("order.json", status="new")
+
+    assert document == {"email": "a@example.test", "status": "new"}
+
+
 def test_a_whole_file_variable_takes_its_arguments_as_overrides(loader, write, suite_variables):
     """There is no text to fill, so every argument is a path into the object."""
     suite_variables["${ORDER}"] = {"status": "new"}

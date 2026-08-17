@@ -18,6 +18,7 @@ from robot.utils import DotDict, timestr_to_secs
 from MongoDBLibrary.connection_pool import ConnectionManager
 from MongoDBLibrary.documents import (
     build_document,
+    declared_placeholders,
     resolve_document_file,
     substitute_variables,
 )
@@ -39,6 +40,12 @@ else:
     # argument is a plain string exactly as it was before.
     Credential = Union[str, Secret] if Secret is not None else str
     OptionalCredential = Optional[Credential]
+
+# Parts of an explain document that describe plans the server did not run: the candidates
+# it rejected, and, at ``allPlansExecution`` verbosity, the trial runs it used to choose
+# between them. Both are written in the same shape as the plan that did run, so a summary
+# that walks the whole document reports work that never happened.
+NOT_EXECUTED = ("rejectedPlans", "allPlansExecution")
 
 
 class MongoDBKeywords:
@@ -219,12 +226,19 @@ class MongoDBKeywords:
         sharded cluster. Walking every nested dictionary and list instead of following
         those names by hand means a shape this library has not seen still reports its
         stages, which is the whole reason the summary can stay version-agnostic.
+
+        The walk stays agnostic about the names of the *links*, but deliberately not about
+        ``NOT_EXECUTED``: those two hold plans the server considered and did not use, and a
+        stage from one of them describes work that never happened. Yielding them would let
+        a rejected COLLSCAN report a collection scan for a query answered by an index, and
+        a rejected index plan lend its ``indexName`` to a query that scanned the collection.
         """
         if isinstance(node, dict):
             if "stage" in node:
                 yield node
-            for value in node.values():
-                yield from MongoDBKeywords._explain_stages(value)
+            for key, value in node.items():
+                if key not in NOT_EXECUTED:
+                    yield from MongoDBKeywords._explain_stages(value)
         elif isinstance(node, list):
             for item in node:
                 yield from MongoDBKeywords._explain_stages(item)
@@ -643,7 +657,9 @@ class MongoDBKeywords:
            fails the keyword.
         2. ``{...}`` placeholders are filled from this keyword's named arguments, so a
            value that differs on every call is given at the call. One that is left
-           unfilled fails the keyword.
+           unfilled fails the keyword. A placeholder is one the file itself is written
+           with: braces that arrive in step 1, as part of a variable's value, are data and
+           are inserted as they are.
         3. ``$oid``, ``$date``, ``$numberInt`` and ``$numberDouble`` become ``ObjectId``,
            ``datetime``, ``int`` and ``float``. Plain JSON values keep their own types,
            and MongoDB's ``$``-prefixed update operators are left alone, so an update
@@ -681,7 +697,9 @@ class MongoDBKeywords:
         document_file = resolve_document_file(path, self.document_path)
         text = document_file.read_text(encoding="utf-8")
         substituted = substitute_variables(text, document_file.name)
-        document = build_document(substituted, arguments, document_file.name)
+        # From the file as it was read, so a variable whose value contains braces is data.
+        allowed = declared_placeholders(text)
+        document = build_document(substituted, arguments, document_file.name, allowed)
         logger.debug(f"Loaded document from '{document_file}': {document!r}")
         return cast(dict, self._as_dot_dict(document))
 
@@ -2015,9 +2033,12 @@ class MongoDBKeywords:
             existing = dict(collection.index_information())
             if any(list(definition.get("key", [])) == expected for definition in existing.values()):
                 return
+            # Every collection that exists has at least ``_id_``, so nothing at all means
+            # the collection does not, which is a likelier explanation of the failure than
+            # a missing index and is worth saying rather than leaving the sentence empty.
             present = ", ".join(
                 f"{name} {dict(definition.get('key', []))}" for name, definition in sorted(existing.items())
-            )
+            ) or "no indexes at all, so the collection may not exist"
             raise AssertionError(
                 assertion_message
                 or f"No index on '{collection_name}' has keys {dict(expected)}. It has: {present}."

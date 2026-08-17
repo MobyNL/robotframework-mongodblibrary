@@ -210,6 +210,62 @@ def test_explain_query_flags_a_collection_scan(explains):
     assert plan["docs_examined"] == 3639
 
 
+def test_explain_query_ignores_a_rejected_collection_scan(explains):
+    """A candidate plan the server threw away describes work that never happened.
+
+    Sorting by a field the index does not cover is enough to put a COLLSCAN among the
+    rejected plans of a query the server answered with an index, so reporting one would
+    send a suite hunting for a scan that is not there.
+    """
+    explain = classic_explain()
+    explain["queryPlanner"]["rejectedPlans"] = [{"stage": "SORT", "inputStage": {"stage": "COLLSCAN"}}]
+    mongo = explains(explain)
+
+    plan = mongo.explain_query("readings", **{"_id.deviceId": "device-1"})
+
+    assert plan["collection_scan"] is False
+    assert plan["index_name"] == "_id.deviceId_1__id.date_1"
+
+
+def test_explain_query_does_not_borrow_an_index_from_a_rejected_plan(explains):
+    """The mirror case, and the worse one: an index reported for a query that scanned."""
+    explain = collection_scan_explain()
+    explain["queryPlanner"]["rejectedPlans"] = [
+        {"stage": "FETCH", "inputStage": {"stage": "IXSCAN", "indexName": "status_1", "indexBounds": BOUNDS}}
+    ]
+    mongo = explains(explain)
+
+    plan = mongo.explain_query("readings", status="new")
+
+    assert plan["collection_scan"] is True
+    assert plan["index_name"] is None
+    assert plan["index_bounds"] is None
+
+
+def test_explain_query_ignores_the_trial_runs_of_the_plans_it_did_not_pick(explains):
+    """``allPlansExecution`` verbosity carries every candidate's trial run as well."""
+    explain = classic_explain()
+    explain["executionStats"]["allPlansExecution"] = [
+        {"executionStages": {"stage": "COLLSCAN", "docsExamined": 3639}}
+    ]
+    mongo = explains(explain)
+
+    assert mongo.explain_query("readings", status="new")["collection_scan"] is False
+
+
+def test_explain_query_ignores_a_shards_rejected_plans(explains):
+    """Each shard chooses its own plan, and keeps its own rejects alongside it."""
+    explain = sharded_explain()
+    shard = explain["queryPlanner"]["winningPlan"]["shards"][0]
+    shard["rejectedPlans"] = [{"stage": "COLLSCAN", "direction": "forward"}]
+    mongo = explains(explain)
+
+    summaries = {summary["shard"]: summary for summary in mongo.explain_query("readings", status="new")["shards"]}
+
+    assert summaries["shard-a"]["collection_scan"] is False
+    assert summaries["shard-b"]["collection_scan"] is True
+
+
 def test_explain_query_summarises_each_shard(explains):
     mongo = explains(sharded_explain())
 

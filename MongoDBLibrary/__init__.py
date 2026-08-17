@@ -196,6 +196,10 @@ class MongoDBLibrary(DynamicCore):
     Two different holes, then, and the syntax says which is which: ``${name}`` comes from
     the suite, ``{name}`` from the call.
 
+    A hole is one the *file* is written with. Substitution happens first, so a variable
+    whose value contains braces — ``${GREETING}`` holding ``Hi {first_name}`` — is data:
+    the braces are inserted as they are and no argument fills them.
+
     As for what a filled value becomes: a string that is *exactly* one placeholder is
     replaced whole, quotes included, by the
     value's own Extended JSON form. That is what lets a valid-JSON template carry something

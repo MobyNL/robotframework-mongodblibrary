@@ -942,6 +942,18 @@ def test_collection_should_have_index_reports_what_is_there(mongo):
         mongo.collection_should_have_index("users", {"email": 1})
 
 
+def test_collection_should_have_index_says_when_there_is_no_collection(mongo):
+    """A collection that exists has ``_id_``, so nothing at all is the likelier diagnosis.
+
+    Naming it beats a sentence that trails off after ``It has:``, which is what a typo in
+    the collection name used to produce.
+    """
+    mongo.insert_document("readings", {"email": "a@example.test"})
+
+    with pytest.raises(AssertionError, match="no indexes at all, so the collection may not exist"):
+        mongo.collection_should_have_index("redings", {"email": 1})
+
+
 def test_collection_should_have_index_is_field_order_sensitive(mongo):
     """A compound index serves its fields left to right, so the order is the index."""
     mongo.insert_document("readings", {"_id": {"deviceId": "d", "date": 1}})

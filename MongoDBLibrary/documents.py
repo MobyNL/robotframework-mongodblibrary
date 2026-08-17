@@ -66,6 +66,22 @@ def resolve_document_file(path: str, document_path: Optional[Path]) -> Path:
     raise ValueError(f"Document file '{path}' was not found. Looked in: {searched}.")
 
 
+def declared_placeholders(text: str) -> set[str]:
+    """
+    Return the placeholder names ``text`` contains, for use as an allowlist.
+
+    Read from the file *before* variables are substituted, so a ``${...}`` value that
+    happens to contain braces is data rather than a template. Deliberately looser than
+    `fill_placeholders`: it ignores whether a match sits inside a string and whether the
+    braces were escaped, so it can name more than the scanner would fill. That is safe
+    because it only ever permits — the exactness stays where the filling happens.
+
+    :param text: File contents, as read
+    :return: The names the file declares
+    """
+    return {match.group(1) for match in PLACEHOLDER.finditer(text)}
+
+
 def substitute_variables(text: str, name: str) -> Any:
     """
     Replace the ``${...}`` placeholders in ``text`` from the calling suite's variables.
@@ -95,7 +111,8 @@ def substitute_variables(text: str, name: str) -> Any:
         raise ValueError(f"Document '{name}' has a variable that could not be resolved: {error}") from error
 
 
-def fill_placeholders(text: str, values: dict[str, Any], name: str) -> FilledDocument:
+def fill_placeholders(text: str, values: dict[str, Any], name: str,
+                      allowed: Optional[set[str]] = None) -> FilledDocument:
     """
     Fill the ``{name}`` placeholders of a template document from ``values``.
 
@@ -119,9 +136,16 @@ def fill_placeholders(text: str, values: dict[str, Any], name: str) -> FilledDoc
     are JSON's own braces and are left alone — unescaping there would rewrite the ``}}``
     that closes every nested object in the file.
 
+    A placeholder is something the file says, so ``allowed`` names the placeholders that
+    were in the file as it was read. A ``${...}`` variable is substituted before this runs,
+    and a variable's value is data: braces that arrive that way are left exactly as they
+    came, never filled and never reported as an unfilled hole the file never had.
+
     :param text: File contents, ``${...}`` variables already substituted
     :param values: Candidate values, which are the loading keyword's named arguments
     :param name: File name, for the failure message
+    :param allowed: Placeholder names the file itself declares, from `declared_placeholders`
+        on the unsubstituted text, or None to fill whatever the text now contains
     :return: The filled text, the keys of ``values`` it used, and the placeholders the
         file declares
     """
@@ -129,6 +153,10 @@ def fill_placeholders(text: str, values: dict[str, Any], name: str) -> FilledDoc
     used: set[str] = set()
     declared: list[str] = []
     missing: list[str] = []
+
+    def from_file(key: str) -> bool:
+        """Whether ``key`` is a placeholder the file declared, rather than substituted text."""
+        return allowed is None or key in allowed
 
     def take(key: str) -> Any:
         """Record a placeholder as declared, and return its value if there is one."""
@@ -147,7 +175,7 @@ def fill_placeholders(text: str, values: dict[str, Any], name: str) -> FilledDoc
         character = text[index]
         if not in_string:
             quoted = QUOTED_PLACEHOLDER.match(text, index)
-            if quoted is not None:  # a whole string, so the value keeps its own type
+            if quoted is not None and from_file(quoted.group(1)):  # a whole string, so the value keeps its own type
                 value = take(quoted.group(1))
                 filled.append(quoted.group(0) if value is _MISSING else _as_json(value))
                 index = quoted.end()
@@ -158,7 +186,7 @@ def fill_placeholders(text: str, values: dict[str, Any], name: str) -> FilledDoc
                 index += 1
                 continue
             bare = PLACEHOLDER.match(text, index)
-            if bare is not None:  # unquoted, so it is a value position too
+            if bare is not None and from_file(bare.group(1)):  # unquoted, so it is a value position too
                 value = take(bare.group(1))
                 filled.append(bare.group(0) if value is _MISSING else _as_json(value))
                 index = bare.end()
@@ -180,7 +208,7 @@ def fill_placeholders(text: str, values: dict[str, Any], name: str) -> FilledDoc
             index += 2
             continue
         inside = PLACEHOLDER.match(text, index)
-        if inside is not None:  # part of a longer string, so the value is text here
+        if inside is not None and from_file(inside.group(1)):  # part of a longer string, so the value is text here
             value = take(inside.group(1))
             filled.append(inside.group(0) if value is _MISSING else _as_json_string_body(value))
             index = inside.end()
@@ -271,7 +299,8 @@ def as_document(value: Any, name: str) -> dict:
     return parse_document(str(value), name)
 
 
-def build_document(substituted: Any, arguments: dict[str, Any], name: str) -> dict:
+def build_document(substituted: Any, arguments: dict[str, Any], name: str,
+                   allowed: Optional[set[str]] = None) -> dict:
     """
     Turn a substituted file into the finished document, using ``arguments`` for both jobs.
 
@@ -284,12 +313,14 @@ def build_document(substituted: Any, arguments: dict[str, Any], name: str) -> di
     :param substituted: Result of `substitute_variables`
     :param arguments: The loading keyword's named arguments
     :param name: File name, for the failure messages
+    :param allowed: Placeholder names the file declares, from `declared_placeholders` on
+        the text before substitution, or None to fill whatever the substituted text holds
     :return: The document
     """
     declared: list[str] = []
     remaining = arguments
     if isinstance(substituted, str):
-        filled = fill_placeholders(substituted, arguments, name)
+        filled = fill_placeholders(substituted, arguments, name, allowed)
         substituted, declared = filled.text, filled.declared
         remaining = {key: value for key, value in arguments.items() if key not in filled.used}
     document = as_document(substituted, name)
