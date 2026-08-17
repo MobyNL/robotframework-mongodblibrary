@@ -920,6 +920,67 @@ def test_check_index_exists_honours_retry_timeout(mongo):
         )
 
 
+def test_collection_should_have_index(mongo):
+    mongo.insert_document("readings", {"_id": {"deviceId": "d", "date": 1}})
+    mongo.create_index("readings", {"_id.deviceId": 1, "_id.date": 1})
+
+    mongo.collection_should_have_index("readings", {"_id.deviceId": 1, "_id.date": 1})
+
+
+def test_collection_should_have_index_ignores_the_derived_name(mongo):
+    """The point of asking by fields: the same index under a name of someone's choosing."""
+    mongo.insert_document("users", {"email": "a@example.test"})
+    mongo.create_index("users", {"email": 1}, index_name="by_email")
+
+    mongo.collection_should_have_index("users", {"email": 1})
+
+
+def test_collection_should_have_index_reports_what_is_there(mongo):
+    mongo.insert_document("users", {"email": "a@example.test"})
+
+    with pytest.raises(AssertionError, match=r"No index on 'users' has keys.*It has: _id_ \{'_id': 1\}"):
+        mongo.collection_should_have_index("users", {"email": 1})
+
+
+def test_collection_should_have_index_says_when_there_is_no_collection(mongo):
+    """A collection that exists has ``_id_``, so nothing at all is the likelier diagnosis.
+
+    Naming it beats a sentence that trails off after ``It has:``, which is what a typo in
+    the collection name used to produce.
+    """
+    mongo.insert_document("readings", {"email": "a@example.test"})
+
+    with pytest.raises(AssertionError, match="no indexes at all, so the collection may not exist"):
+        mongo.collection_should_have_index("redings", {"email": 1})
+
+
+def test_collection_should_have_index_is_field_order_sensitive(mongo):
+    """A compound index serves its fields left to right, so the order is the index."""
+    mongo.insert_document("readings", {"_id": {"deviceId": "d", "date": 1}})
+    mongo.create_index("readings", {"_id.deviceId": 1, "_id.date": 1})
+
+    with pytest.raises(AssertionError, match="No index on 'readings' has keys"):
+        mongo.collection_should_have_index("readings", {"_id.date": 1, "_id.deviceId": 1})
+
+
+def test_collection_should_have_index_takes_a_custom_message(mongo):
+    mongo.insert_document("users", {"email": "a@example.test"})
+
+    with pytest.raises(AssertionError, match="the login query needs this"):
+        mongo.collection_should_have_index(
+            "users", {"email": 1}, assertion_message="the login query needs this"
+        )
+
+
+def test_collection_should_have_index_honours_retry_timeout(mongo):
+    mongo.insert_document("users", {"email": "a@example.test"})
+
+    with pytest.raises(AssertionError, match="No index on 'users' has keys"):
+        mongo.collection_should_have_index(
+            "users", {"email": 1}, retry_timeout="100 milliseconds", retry_pause="0 seconds"
+        )
+
+
 def test_document_should_exist(mongo):
     mongo.insert_document("orders", {"order_id": "A-1"})
 
@@ -1010,6 +1071,7 @@ def test_existence_assertions_keep_their_query_argument_types(keyword_name):
         param("check_distinct_values", ("orders", "status", AssertionOperator.equal, []), {}, id="check_distinct"),
         param("check_collection_exists", ("orders",), {}, id="check_collection_exists"),
         param("check_index_exists", ("orders", "by_email"), {}, id="check_index_exists"),
+        param("collection_should_have_index", ("orders", {"email": 1}), {}, id="collection_should_have_index"),
         param("document_should_exist", ("orders",), {"key": "value"}, id="document_should_exist"),
         param("document_should_not_exist", ("orders",), {"key": "value"}, id="document_should_not_exist"),
     ],

@@ -18,6 +18,7 @@ every keyword, its arguments and examples.
 - [Resetting Between Tests](#resetting-between-tests)
 - [Waiting For Data](#waiting-for-data)
 - [Document Ids](#document-ids)
+- [Diagnosing An Empty Result](#diagnosing-an-empty-result)
 - [Connecting To A Hosted Cluster (MongoDB Atlas)](#connecting-to-a-hosted-cluster-mongodb-atlas)
 - [Using With AWS](#using-with-aws)
 - [Beyond These Keywords](#beyond-these-keywords)
@@ -27,12 +28,16 @@ every keyword, its arguments and examples.
 - Connect to a single host, a connection string, or a hosted cluster such as MongoDB Atlas
 - Named connections with a connection pool, and clients shared between aliases
 - CRUD on one or many documents, with MongoDB query and update operators
+- Seed documents read from Extended JSON files: template placeholders filled from the
+  call's arguments, suite variables substituted, and any field overridable by its path
 - Queries with projection, sorting, limiting, skipping and distinct values
 - Upserting and whole-document replacement, so a fixture step can run twice
 - Collection and database management: create, drop, list
 - Index creation, listing and dropping, including unique, sparse and TTL indexes
 - Retrying assertions on a query result, a document count, a set of values, or the
-  existence of a document, a collection or an index
+  existence of a document, a collection or an index — by its fields as well as its name
+- `Explain Query` for the query that returns nothing and reports no error: the plan the
+  server chose, and the values it actually searched for
 - `Run Database Command` for everything the keywords do not wrap
 - Runs on Robot Framework 5.0 through 7.x, from one code path
 
@@ -72,17 +77,29 @@ is `robotframework-mongodblibrary`.
 Library    MongoDBLibrary    coerce_object_ids=${True}
 ```
 
-`coerce_object_ids` (default `${True}`) is the library's only import-time argument. It
-controls whether a string `_id` in a query is rewritten to a BSON `ObjectId`; see
-[Document Ids](#document-ids) for what that means and when to turn it off. Everything
-else — hosts, credentials, TLS, auth mechanism — is configured per connection, on the
-connect keywords.
+There are two import-time arguments, and everything else — hosts, credentials, TLS, auth
+mechanism — is configured per connection, on the connect keywords.
+
+`coerce_object_ids` (default `${True}`) controls whether a string `_id` in a query is
+rewritten to a BSON `ObjectId`; see [Document Ids](#document-ids) for what that means and
+when to turn it off.
+
+`document_path` (unset by default) is the directory that documents given to
+`Load Document` and `Insert Document From File` by file name are looked up in; see
+[Documents From Files](#documents-from-files). It removes the repetition of naming the
+directory in every call and does nothing else, so a path given to the keyword still works
+without it.
+
+```robotframework
+*** Settings ***
+Library    MongoDBLibrary    document_path=${CURDIR}/documents
+```
 
 The library's scope is `GLOBAL`, so one instance is shared by every suite in a run and a
 connection opened in one suite is still open in the next. One consequence is worth
 knowing: Robot Framework creates a separate instance per set of import arguments, so two
-suites that import with *different* `coerce_object_ids` values get separate instances,
-and therefore separate connection pools rather than shared connections.
+suites that import with *different* argument values get separate instances, and therefore
+separate connection pools rather than shared connections.
 
 ## Usage Example
 
@@ -219,6 +236,176 @@ Query An Id Explicitly
 
 Full details, including exactly what is and is not rewritten, are in the `Object Ids`
 section of the [keyword documentation](https://mobynl.github.io/robotframework-mongodblibrary/).
+
+## Diagnosing An Empty Result
+
+An id that does not match is one cause of a query that finds nothing and errors on
+nothing. `Explain Query` covers the rest: it asks the server how it answered the query,
+and the field to read first is `index_bounds` — the values it actually searched for.
+
+```robotframework
+*** Test Cases ***
+Find Out Why The Document Is Missing
+    ${plan}    Explain Query    collection_name=readings    _id.deviceId=${device_id}    _id.date=${date}
+    Log    ${plan.index_bounds}
+```
+
+```
+'_id.deviceId': ['["device-1", "device-1"]']
+'_id.date':     ['[new Date(1767830400000), new Date(1767830400000)]']
+```
+
+Comparing that with what the suite passed is usually the whole diagnosis. The keyword
+asserts nothing and is not meant to stay in a passing test: put it beside the find that
+returned nothing, read the log, take it out again.
+
+### A compound `_id`
+
+A collection keyed by a subdocument rather than a single value hits three of these at
+once, and none of them errors:
+
+```
+{"_id": {"deviceId": "device-1", "date": ISODate("2026-01-08T00:00:00.001Z")}}
+```
+
+1. **The automatic `_id_` index cannot answer a query on part of the id.** It stores the
+   subdocument as one opaque value, so `_id.deviceId` and `_id.date` are served by a
+   separate index if one exists, and by reading every document if not. Nothing in the
+   suite says that index is load-bearing, so assert it:
+
+   ```robotframework
+   Collection Should Have Index    collection_name=readings    keys={"_id.deviceId": 1, "_id.date": 1}
+   ```
+
+2. **Matching the whole `_id` is field-order sensitive.** It compares the stored BSON, so
+   the order of the fields is part of the value:
+
+   ```robotframework
+   query={"_id": {"deviceId": "device-1", "date": ${date}}}    # matches
+   query={"_id": {"date": ${date}, "deviceId": "device-1"}}    # matches nothing, silently
+   ```
+
+3. **A date compares exactly.** A `datetime` at midnight does not match a document stored
+   with milliseconds — which is exactly what the `index_bounds` above make visible.
+
+`Explain Query` also reports `collection_scan`, and it is deliberately *information*
+rather than an assertion. MongoDB rightly chooses a collection scan on a small collection,
+where reading it beats an index lookup plus a fetch, so "this query must not scan" passes
+against production-sized data and fails against a freshly seeded test collection with
+nothing wrong. Where a suite needs an index, `Collection Should Have Index` says so
+directly and cannot flake.
+
+## Documents From Files
+
+A fixture document written into a suite is fine until a second test needs it, and then it
+is copied and the copies drift. `Load Document` reads one from a JSON file, and
+`Insert Document From File` reads it and inserts it in one step:
+
+```robotframework
+*** Settings ***
+Library    MongoDBLibrary    document_path=${CURDIR}/documents
+
+*** Test Cases ***
+Seed An Order
+    ${document}    Load Document    order.json
+    ${doc_id}      Insert Document From File    collection_name=orders    path=order.json
+```
+
+The file is MongoDB Extended JSON, so it can hold the types MongoDB stores rather than
+only the ones JSON has syntax for:
+
+```json
+{
+    "_id": {"$oid": "6a7ccdea6abf6a4ebbc3514f"},
+    "placedAt": {"$date": "2026-03-01T09:30:00Z"},
+    "quantity": {"$numberInt": "3"},
+    "total": {"$numberDouble": "42.50"},
+    "email": "${EMAIL}",
+    "lines": [{"sku": "A-1", "quantity": 2}]
+}
+```
+
+That matters for the same reason [Document Ids](#document-ids) does: a string that looks
+like an id does not match one, and a date written as text is stored as text and does not
+compare as a date. Plain JSON values keep their own types. MongoDB's update operators are
+`$`-prefixed too and are passed through untouched, nested values included, so a file can
+hold `{"$set": ..., "$push": ...}` for an update as readily as a document to insert.
+
+`${...}` in the file is replaced from the variables the calling suite can see, and one that
+resolves to nothing fails the keyword naming the file and the variable — rather than
+inserting a document that still says `${EMAIL}` and failing a test somewhere later against
+data that looks almost right.
+
+### Filling A Template
+
+A value that differs on *every* call belongs in the call rather than in a suite variable.
+A file can declare a hole for one, written `{name}` and filled from the keyword's named
+arguments:
+
+```json
+{
+    "unique_id": "{unique_id}",
+    "customerId": "{customerId}",
+    "placedAt": "{placed_at}",
+    "quantity": "{quantity}",
+    "reference": "REF-{unique_id}",
+    "status": "new"
+}
+```
+
+```robotframework
+*** Test Cases ***
+Seed An Order Per Call
+    ${doc_id}    Insert Document From File    collection_name=orders    path=order.json
+    ...          unique_id=order-1    customerId=${oid}    placed_at=${now}    quantity=3
+    ${document}  Load Document    order.json    &{placeholders}
+```
+
+The template stays valid JSON, so editors, `jq` and formatters still read it. Two kinds of
+hole, and the syntax says which is which: `${name}` comes from the suite, `{name}` from the
+call.
+
+A string that is *exactly* one placeholder is replaced whole, quotes included, by the
+value's own Extended JSON form — which is what lets a valid-JSON template carry a value JSON
+cannot write, with no `$oid` or `$date` wrapper needed:
+
+| In the file | Given | Stored as |
+|---|---|---|
+| `"customerId": "{customerId}"` | an ObjectId | a real `ObjectId` |
+| `"placedAt": "{placed_at}"` | a datetime | a real `datetime` |
+| `"quantity": "{quantity}"` | `3` | a real `int` |
+| `"reference": "REF-{unique_id}"` | `order-1` | `"REF-order-1"` |
+
+Inside a string, `{{` and `}}` are literal braces as in `str.format`; JSON's own braces are
+never touched. A hole the file declares that no argument fills is an error naming the file
+and the holes, for the same reason an unresolved `${...}` is.
+
+### Overriding Fields
+
+A field the file already fills can be changed without declaring a hole for it, which is
+what a value that varies only *occasionally* wants — the file's own value stays as the
+default for every test that does not mention it. Any field can be overridden by its path,
+with list positions written as numbers:
+
+```robotframework
+*** Test Cases ***
+Seed Two Orders From One File
+    ${shipped}    Load Document    order.json    status=shipped    lines.0.quantity=3
+    ${mine}       Load Document    order.json    customer._id=${customer_id}
+```
+
+This is the part a suite cannot do for itself: `&{dict}` expansion merges one level deep,
+so overriding a nested field otherwise means rebuilding every level above it. A value
+written literally is read the way the file's own values are — `0.8` is a number, `true` is
+a boolean, `{"$oid": "..."}` is an ObjectId, and a word such as `shipped` is text. Every
+step of a path has to exist in the document already; one that does not fails with what the
+document held at that point, because a path that misses is a typo far more often than it is
+a field meant to be added.
+
+Placeholders and overrides are given the same way and the file decides which an argument
+is: a name it declares as a placeholder fills that placeholder, anything else is a path. A
+bare name that is neither fails naming both, since which was meant decides whether the fix
+belongs in the file or in the call.
 
 ## Connecting To A Hosted Cluster (MongoDB Atlas)
 

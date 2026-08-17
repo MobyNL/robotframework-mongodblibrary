@@ -1,5 +1,8 @@
+import json
 import time
 from ast import literal_eval
+from collections.abc import Iterator
+from pathlib import Path
 from typing import Any, Callable, cast, Optional, TYPE_CHECKING, Union
 
 from assertionengine import AssertionOperator, verify_assertion
@@ -13,6 +16,12 @@ from robot.libraries.BuiltIn import BuiltIn
 from robot.utils import DotDict, timestr_to_secs
 
 from MongoDBLibrary.connection_pool import ConnectionManager
+from MongoDBLibrary.documents import (
+    build_document,
+    declared_placeholders,
+    resolve_document_file,
+    substitute_variables,
+)
 
 try:  # Robot Framework 7.4 and later
     from robot.api.types import Secret
@@ -32,6 +41,12 @@ else:
     Credential = Union[str, Secret] if Secret is not None else str
     OptionalCredential = Optional[Credential]
 
+# Parts of an explain document that describe plans the server did not run: the candidates
+# it rejected, and, at ``allPlansExecution`` verbosity, the trial runs it used to choose
+# between them. Both are written in the same shape as the plan that did run, so a summary
+# that walks the whole document reports work that never happened.
+NOT_EXECUTED = ("rejectedPlans", "allPlansExecution")
+
 
 class MongoDBKeywords:
     """
@@ -40,7 +55,8 @@ class MongoDBKeywords:
     This class contains Robot Framework keywords for MongoDB operations.
     """
 
-    def __init__(self, connection_manager: ConnectionManager, coerce_object_ids: bool = True):
+    def __init__(self, connection_manager: ConnectionManager, coerce_object_ids: bool = True,
+                 document_path: Optional[str] = None):
         """
         Initializes the MongoDBKeywords library.
 
@@ -48,9 +64,11 @@ class MongoDBKeywords:
         - ``connection_manager``: Manages connections to MongoDB.
         - ``coerce_object_ids``: Whether a string ``_id`` in a query is converted to an
           ObjectId.
+        - ``document_path``: Directory that documents given by file name are looked up in.
         """
         self.connection_manager = connection_manager
         self.coerce_object_ids = coerce_object_ids
+        self.document_path = Path(document_path) if document_path else None
 
     # ----------------------------------------------------------------- #
     # Internals
@@ -197,6 +215,137 @@ class MongoDBKeywords:
         if sort_list:
             cursor = cursor.sort(sort_list)
         return self._as_dot_dict(list(cursor))
+
+    @staticmethod
+    def _explain_stages(node: Any) -> Iterator[dict]:
+        """Yield every stage in an explain document, wherever the server put it.
+
+        The plan is a tree whose links are named differently depending on what produced
+        it: ``inputStage`` and ``inputStages`` for a classic plan, ``queryPlan`` for the
+        slot-based engine, ``executionStages`` for the executed side, and ``shards`` for a
+        sharded cluster. Walking every nested dictionary and list instead of following
+        those names by hand means a shape this library has not seen still reports its
+        stages, which is the whole reason the summary can stay version-agnostic.
+
+        The walk stays agnostic about the names of the *links*, but deliberately not about
+        ``NOT_EXECUTED``: those two hold plans the server considered and did not use, and a
+        stage from one of them describes work that never happened. Yielding them would let
+        a rejected COLLSCAN report a collection scan for a query answered by an index, and
+        a rejected index plan lend its ``indexName`` to a query that scanned the collection.
+        """
+        if isinstance(node, dict):
+            if "stage" in node:
+                yield node
+            for key, value in node.items():
+                if key not in NOT_EXECUTED:
+                    yield from MongoDBKeywords._explain_stages(value)
+        elif isinstance(node, list):
+            for item in node:
+                yield from MongoDBKeywords._explain_stages(item)
+
+    @staticmethod
+    def _first_stage_value(stages: list[dict], field: str) -> Any:
+        """Return ``field`` from the first stage that has it, or None."""
+        return next((stage[field] for stage in stages if field in stage), None)
+
+    @staticmethod
+    def _format_explain(collection_name: str, query: Any, summary: dict[str, Any]) -> str:
+        """Lay the summary out over several lines, aligned, for the log.
+
+        Robot Framework renders a logged message with ``white-space: pre-wrap``, so
+        newlines and indentation survive into ``log.html``. A summary on one line is
+        readable by nobody, and the field this keyword exists for — ``index_bounds`` —
+        is the one that suffers most, since it is a dictionary inside it. Here each
+        indexed field gets a line of its own, which is what makes comparing the bounds
+        with what the suite passed a matter of reading rather than of parsing.
+        """
+        lines = [f"Explain of {query!r} on '{collection_name}':"]
+        scalars = [(name, value) for name, value in summary.items() if name not in ("index_bounds", "shards")]
+        width = max(len(name) for name, _ in scalars)
+        lines += [f"  {name:<{width}}  {value}" for name, value in scalars]
+        bounds = summary.get("index_bounds")
+        if bounds:
+            lines.append("  index_bounds")
+            field_width = max(len(field) for field in bounds)
+            for field, values in bounds.items():
+                shown = values if isinstance(values, list) else [values]
+                lines += [f"    {field:<{field_width}}  {value}" for value in shown]
+        for shard in summary.get("shards") or []:
+            lines.append(f"  shard {shard.get('shard')}")
+            lines += [
+                f"    {name:<{width}}  {value}" for name, value in shard.items() if name not in ("shard", "index_bounds")
+            ]
+        return "\n".join(lines)
+
+    @classmethod
+    def _summarise_explain(cls, raw: dict) -> dict[str, Any]:
+        """Flatten an explain document into the handful of fields a test author reads.
+
+        Everything here is derived rather than copied, because the shapes differ by
+        server version and topology while the questions do not: which plan won, what it
+        searched for, and how much it had to look at to answer.
+        """
+        winning = raw.get("queryPlanner", {}).get("winningPlan", {})
+        # The slot-based engine nests the plan the classic one puts at the top.
+        root = winning.get("queryPlan", winning)
+        stages = list(cls._explain_stages(raw))
+        execution = raw.get("executionStats", {})
+        summary: dict[str, Any] = {
+            "stage": root.get("stage"),
+            "index_name": cls._first_stage_value(stages, "indexName"),
+            "index_bounds": cls._first_stage_value(stages, "indexBounds"),
+            # Presence of a COLLSCAN, rather than a list of index stage names: the fast
+            # path for `_id` is reported as EXPRESS_IXSCAN on MongoDB 8 and IDHACK before
+            # it, and an allowlist would have to grow with every server release.
+            "collection_scan": any(stage.get("stage") == "COLLSCAN" for stage in stages),
+            "keys_examined": execution.get("totalKeysExamined"),
+            "docs_examined": execution.get("totalDocsExamined"),
+            "returned": execution.get("nReturned"),
+            "duration_ms": execution.get("executionTimeMillis"),
+        }
+        shards = cls._shard_summaries(raw)
+        if shards is not None:
+            summary["shards"] = shards
+        return summary
+
+    @classmethod
+    def _shard_summaries(cls, raw: dict) -> Optional[list[dict[str, Any]]]:
+        """Summarise each shard of a sharded plan, or None when the plan is not sharded.
+
+        A shard that reads nothing is as interesting as one that reads everything, so
+        each is reported separately rather than only as part of the total.
+        """
+        planner_shards = raw.get("queryPlanner", {}).get("winningPlan", {}).get("shards")
+        execution_shards = raw.get("executionStats", {}).get("executionStages", {}).get("shards")
+        if planner_shards is None and execution_shards is None:
+            return None
+        by_name: dict[str, dict[str, Any]] = {}
+        for shard in planner_shards or []:
+            name = shard.get("shardName")
+            plan = shard.get("winningPlan", {})
+            plan = plan.get("queryPlan", plan)
+            stages = list(cls._explain_stages(shard))
+            by_name[name] = {
+                "shard": name,
+                "stage": plan.get("stage"),
+                "index_name": cls._first_stage_value(stages, "indexName"),
+                "index_bounds": cls._first_stage_value(stages, "indexBounds"),
+                "collection_scan": any(stage.get("stage") == "COLLSCAN" for stage in stages),
+            }
+        for shard in execution_shards or []:
+            name = shard.get("shardName")
+            summary = by_name.setdefault(name, {"shard": name})
+            # The shard's own totals where it reports them, and its root stage's counts
+            # otherwise. The totals are what the unsharded summary counts, so a shard
+            # whose plan has several stages is reported the same way the whole query is.
+            stage = shard.get("executionStages", {})
+            for key, total, per_stage in (
+                ("keys_examined", "totalKeysExamined", "keysExamined"),
+                ("docs_examined", "totalDocsExamined", "docsExamined"),
+                ("returned", "nReturned", "nReturned"),
+            ):
+                summary[key] = shard.get(total, stage.get(per_stage))
+        return list(by_name.values())
 
     def _retry_until_no_assertion_error(self, check: Callable[[], None], retry_timeout: str, retry_pause: str) -> None:
         """
@@ -491,6 +640,70 @@ class MongoDBKeywords:
         return ObjectId(value)
 
     # ----------------------------------------------------------------- #
+    # Documents from files
+    # ----------------------------------------------------------------- #
+
+    @keyword
+    def load_document(self, path: str, **arguments: Any) -> dict:
+        """
+        Read a document from a JSON file, ready to insert or to update with.
+
+        The file is MongoDB Extended JSON, so it can hold the types MongoDB stores rather
+        than only what plain JSON can express. See `Documents From Files` for the whole
+        picture; the short version is that the file is read in four steps:
+
+        1. ``${...}`` variables are replaced from the ones the calling suite can see, so a
+           value shared by a whole suite is written once. One that resolves to nothing
+           fails the keyword.
+        2. ``{...}`` placeholders are filled from this keyword's named arguments, so a
+           value that differs on every call is given at the call. One that is left
+           unfilled fails the keyword. A placeholder is one the file itself is written
+           with: braces that arrive in step 1, as part of a variable's value, are data and
+           are inserted as they are.
+        3. ``$oid``, ``$date``, ``$numberInt`` and ``$numberDouble`` become ``ObjectId``,
+           ``datetime``, ``int`` and ``float``. Plain JSON values keep their own types,
+           and MongoDB's ``$``-prefixed update operators are left alone, so an update
+           document works here as well as a document to insert.
+        4. Any argument that is not a placeholder is written in as a dotted override path.
+
+        Arguments:
+        - ``path``: File name, resolved against the ``document_path`` given at import, or
+          a path, used as written.
+        - ``arguments``: A value for each ``{placeholder}`` the file declares, and a dotted
+          path to a value for each field to override. Which one an argument is depends on
+          the file: a name it declares as a placeholder fills that placeholder, and
+          anything else is a path. ``ingredients.0`` is the first item of a list, so one
+          syntax covers objects and lists both. Every step of an override path has to exist
+          in the document: a path that does not is a typo far more often than it is a field
+          meant to be added, and it fails with what the document did hold at that point.
+
+        Returns:
+        - The document, as a dictionary whose fields Robot Framework can reach with
+          ``${document.field}``.
+
+        Example:
+        | ${document}    Load Document    order.json
+        | ${document}    Load Document    order.json    unique_id=order-1    customerId=${customer_id}
+        | ${document}    Load Document    order.json    &{placeholders}
+        | ${document}    Load Document    order.json    status=shipped    lines.0.quantity=3
+        | ${doc_id}      Insert Document    collection_name=orders    document=${document}
+
+        A dictionary given as ``&{placeholders}`` is expanded into named arguments by Robot
+        Framework, so an empty one fills nothing and the file's own values stand.
+
+        See `Insert Document From File` for the last two lines written as one keyword.
+
+        """
+        document_file = resolve_document_file(path, self.document_path)
+        text = document_file.read_text(encoding="utf-8")
+        substituted = substitute_variables(text, document_file.name)
+        # From the file as it was read, so a variable whose value contains braces is data.
+        allowed = declared_placeholders(text)
+        document = build_document(substituted, arguments, document_file.name, allowed)
+        logger.debug(f"Loaded document from '{document_file}': {document!r}")
+        return cast(dict, self._as_dot_dict(document))
+
+    # ----------------------------------------------------------------- #
     # Inserting
     # ----------------------------------------------------------------- #
 
@@ -541,6 +754,39 @@ class MongoDBKeywords:
         """
         collection = self._get_collection(collection_name, alias)
         return collection.insert_many(documents, ordered=ordered).inserted_ids
+
+    @keyword
+    def insert_document_from_file(self, collection_name: str, path: str, alias: Optional[str] = None,
+                                  **arguments: Any) -> Any:
+        """
+        Insert a document read from a JSON file, which is `Load Document` and
+        `Insert Document` in one step.
+
+        Seeding from a file and inserting it is the shape a fixture almost always wants,
+        and the document itself is rarely worth a variable. Take it in two keywords
+        instead when the same document is inserted more than once, or when the test needs
+        the document as well as what was stored.
+
+        Arguments:
+        - ``collection_name``: Name of the collection where the document will be inserted.
+        - ``path``: File name or path, resolved exactly as `Load Document` resolves it.
+        - ``alias``: Alias of the connection (optional, defaults to the active alias).
+        - ``arguments``: Placeholder values and dotted override paths, as `Load Document`
+          takes them. A placeholder or field genuinely named ``collection_name``, ``path``
+          or ``alias`` cannot be given here, since those name this keyword's own arguments;
+          use `Load Document` and `Insert Document` for that document.
+
+        Returns:
+        - The ID of the inserted document, as `Insert Document` returns it.
+
+        Example:
+        | ${doc_id}    Insert Document From File    collection_name=orders    path=order.json
+        | ${doc_id}    Insert Document From File    collection_name=orders    path=order.json    unique_id=order-1
+        | ${doc_id}    Insert Document From File    collection_name=orders    path=order.json    status=shipped
+
+        """
+        document = self.load_document(path, **arguments)
+        return self.insert_document(collection_name, document, alias)
 
     # ----------------------------------------------------------------- #
     # Reading
@@ -794,6 +1040,107 @@ class MongoDBKeywords:
         collection = self._get_collection(collection_name, alias)
         options: dict[str, Any] = {"allowDiskUse": True} if allow_disk_use else {}
         return self._as_dot_dict(list(collection.aggregate(pipeline, **options)))
+
+    @keyword
+    def explain_query(self, collection_name: str, query: Optional[dict] = None, alias: Optional[str] = None,
+                      projection: Optional[dict] = None, sort: Optional[dict] = None, limit: int = 0, skip: int = 0,
+                      verbosity: str = "executionStats", **params: Any) -> dict:
+        """
+        Report how MongoDB answers a query: which plan it chose and what it searched for.
+
+        *This keyword is a diagnostic and asserts nothing.* It is for the moment a find
+        keyword returns nothing and gives no reason, and it is not meant to stay in a
+        passing test. Nothing here should be asserted on — see ``collection_scan`` below
+        for why the obvious assertion is the wrong one.
+
+        The field to read first is ``index_bounds``: the values the server actually
+        searched for, as it understood them.
+
+        | '_id.date': ['[new Date(1702996077710), new Date(1702996077710)]']
+
+        A query that matches nothing and errors on nothing is nearly always a query that
+        asked for something other than what the caller meant, and this is where that
+        becomes visible — a ``datetime`` at midnight against documents stored with
+        millisecond precision, or a string where the collection holds an ObjectId. Compare
+        the bounds with what the suite passed.
+
+        Takes the query either way the find keywords take it: as free arguments like
+        `Find Document`, or as a ``query`` document like `Find Document With Query`.
+        Giving both fails, so an explain can be dropped in beside a failing call unchanged.
+
+        Arguments:
+        - ``collection_name``: Name of the collection to explain the query against.
+        - ``query``: MongoDB query document, as `Find Document With Query` takes it
+          (optional). Mutually exclusive with ``params``.
+        - ``params``: Query parameters, as `Find Document` takes them. Mutually exclusive
+          with ``query``.
+        - ``alias``: Alias of the connection (optional, defaults to the active alias).
+        - ``projection``, ``sort``, ``limit``, ``skip``: The rest of the find, so that
+          what is explained is the query the suite actually runs (optional).
+        - ``verbosity``: How much the server reports (optional). ``executionStats``, the
+          default, runs the winning plan and counts what it read. ``queryPlanner`` picks a
+          plan without running it, leaving the four counters below empty.
+          ``allPlansExecution`` adds the plans that were rejected.
+
+        Returns:
+        - A dictionary summarising the plan, with the server's own explain document under
+          ``raw``. The summary is also logged at INFO, a field to a line, and the whole
+          explain document at DEBUG, indented:
+
+        | ``stage``           | The winning plan's stage, e.g. ``IXSCAN`` or ``COLLSCAN``.        |
+        | ``index_name``      | Name of the index used, or None if none was.                     |
+        | ``index_bounds``    | The values searched for, per indexed field.                      |
+        | ``collection_scan`` | Whether the plan reads the collection rather than an index.      |
+        | ``keys_examined``   | ``totalKeysExamined``: index entries read.                       |
+        | ``docs_examined``   | ``totalDocsExamined``: documents read.                           |
+        | ``returned``        | ``nReturned``: documents matched.                                |
+        | ``duration_ms``     | ``executionTimeMillis``.                                         |
+        | ``shards``          | The same per shard, on a sharded cluster only.                   |
+
+        ``collection_scan`` is reported as information for a person to read, and is not
+        something to assert on. MongoDB legitimately chooses a collection scan on a small
+        collection, where reading it beats an index lookup plus a fetch, so an assertion
+        that no scan happens passes against production-sized data and fails against a
+        freshly seeded test collection with nothing wrong. To require that an index
+        exists, assert that directly with `Collection Should Have Index`.
+
+        The query is rewritten as every find keyword rewrites it, so a string ``_id`` is
+        explained as the ObjectId that would really be sent. See `Object Ids`.
+
+        Aggregation pipelines are not covered; explain one with `Run Database Command`.
+
+        Example:
+        | ${plan}    Explain Query    collection_name=readings    _id.deviceId=${device_id}    _id.date=${date}
+        | Log    ${plan.index_bounds}
+        | ${plan}    Explain Query    collection_name=orders    query={"status": "new"}    sort={"placedAt": -1}
+
+        """
+        if query is not None and params:
+            raise ValueError(
+                f"Give the query either as 'query' or as free arguments, not both. "
+                f"Got query={query!r} and {sorted(params)}."
+            )
+        database = self._get_database(alias)
+        find: dict[str, Any] = {
+            "find": collection_name,
+            "filter": self._normalise_query(query if query is not None else params),
+        }
+        if projection:
+            find["projection"] = projection
+        if sort:
+            find["sort"] = sort
+        if limit:
+            find["limit"] = limit
+        if skip:
+            find["skip"] = skip
+        raw = dict(database.command({"explain": find, "verbosity": verbosity}))
+        summary = self._summarise_explain(raw)
+        logger.info(self._format_explain(collection_name, find["filter"], summary))
+        # The whole explain at DEBUG, indented. It is far too long to read every time and
+        # exactly what is wanted on the occasion the summary leaves out the answer.
+        logger.debug(json.dumps(raw, indent=2, default=str))
+        summary["raw"] = raw
+        return self._as_dot_dict(summary)
 
     # ----------------------------------------------------------------- #
     # Updating
@@ -1631,6 +1978,71 @@ class MongoDBKeywords:
                     assertion_message
                     or f"Index '{index_name}' does not exist on '{collection_name}'. It has: {sorted(existing)}."
                 )
+
+        self._retry_until_no_assertion_error(check, retry_timeout, retry_pause)
+
+    @keyword
+    def collection_should_have_index(
+        self,
+        collection_name: str,
+        keys: dict,
+        alias: Optional[str] = None,
+        assertion_message: Optional[str] = None,
+        retry_timeout: str = "0 seconds",
+        retry_pause: str = "0.5 seconds"
+    ) -> None:
+        """
+        Fail unless an index on exactly these fields exists on the collection.
+
+        The guard for an index a suite's queries quietly depend on. Dropping it does not
+        break anything visibly: the queries still return the right documents, by reading
+        the whole collection to do it, and the suite gets slower until something times
+        out somewhere unrelated. This turns that into one failing assertion naming the
+        index.
+
+        Asks by fields rather than by name, which `Check Index Exists` does. A name is
+        derived from the fields — an index on ``{"_id.deviceId": 1, "_id.date": 1}`` is
+        called ``_id.deviceId_1__id.date_1`` — so naming it means writing out a string
+        nobody should have to spell, that changes if the index is ever recreated slightly
+        differently. The fields are what the queries actually depend on.
+
+        The order of the fields matters and is compared: a compound index serves a query
+        on its first field, or its first two, and so on, so an index on
+        ``{"deviceId": 1, "date": 1}`` is a different index from one on
+        ``{"date": 1, "deviceId": 1}``.
+
+        Arguments:
+        - ``collection_name``: Name of the collection.
+        - ``keys``: Fields the index is on, in order, exactly as `Create Index` takes
+          them, e.g. ``{"_id.deviceId": 1, "_id.date": 1}``.
+        - ``alias``: Alias of the connection (optional, defaults to the active alias).
+        - ``assertion_message``: Custom message for assertion failure (optional).
+        - ``retry_timeout``: How long to keep checking before failing (optional). Give it
+          a value when a migration or an application's start-up creates the index.
+        - ``retry_pause``: Pause duration between retries (optional).
+
+        Example:
+        | Collection Should Have Index    collection_name=readings    keys={"_id.deviceId": 1, "_id.date": 1}
+        | Collection Should Have Index    collection_name=users    keys={"email": 1}    retry_timeout=10 seconds
+
+        """
+        collection = self._get_collection(collection_name, alias)
+        expected = [(field, direction) for field, direction in keys.items()]
+
+        def check() -> None:
+            existing = dict(collection.index_information())
+            if any(list(definition.get("key", [])) == expected for definition in existing.values()):
+                return
+            # Every collection that exists has at least ``_id_``, so nothing at all means
+            # the collection does not, which is a likelier explanation of the failure than
+            # a missing index and is worth saying rather than leaving the sentence empty.
+            present = ", ".join(
+                f"{name} {dict(definition.get('key', []))}" for name, definition in sorted(existing.items())
+            ) or "no indexes at all, so the collection may not exist"
+            raise AssertionError(
+                assertion_message
+                or f"No index on '{collection_name}' has keys {dict(expected)}. It has: {present}."
+            )
 
         self._retry_until_no_assertion_error(check, retry_timeout, retry_pause)
 

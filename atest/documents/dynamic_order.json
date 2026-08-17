@@ -1,0 +1,11 @@
+{
+    "unique_id": "{unique_id}",
+    "customerId": "{customerId}",
+    "placedAt": "{placed_at}",
+    "quantity": "{quantity}",
+    "reference": "REF-{unique_id}",
+    "status": "new",
+    "lines": [
+        {"sku": "A-1", "quantity": 2}
+    ]
+}

@@ -5,7 +5,117 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.2.0] - 2026-08-17
+
+### Added
+
+- `Explain Query` reports how MongoDB answered a query: the winning plan's stage, the
+  index it used, whether it read the collection rather than an index, how many keys and
+  documents it examined, and — the field it exists for — `index_bounds`, the values the
+  server actually searched for. A query that matches nothing and reports no error is
+  nearly always a query that asked for something other than what the suite meant, and
+  comparing the bounds with what was passed is the whole diagnosis:
+
+  ```robotframework
+  ${plan}    Explain Query    collection_name=readings    _id.deviceId=${device_id}    _id.date=${date}
+  Log    ${plan.index_bounds}
+  ```
+
+  It takes the query either way the find keywords take it, as free arguments like
+  `Find Document` or as a `query` document like `Find Document With Query`, so it can be
+  dropped in beside a failing call without rewriting it. The summary is returned, and
+  logged at INFO a field to a line, with each indexed field's bounds on a line of its own:
+  Robot Framework keeps newlines and indentation in `log.html`, and a summary on one line
+  is readable by nobody. The whole explain document is logged at DEBUG, indented, and
+  returned under `raw` for anything the summary leaves out.
+  `verbosity` selects `executionStats`, which is the default and runs the winning plan,
+  `queryPlanner`, which picks a plan without running it, or `allPlansExecution`, which
+  adds the rejected plans.
+
+  The summary is derived rather than copied, because the explain document's shape differs
+  by server version and topology while the questions do not: a slot-based plan nests its
+  stages under `queryPlan`, a sharded cluster reports per shard, and the `_id` fast path
+  is `EXPRESS_IXSCAN` on MongoDB 8 and `IDHACK` before it. A collection scan is detected
+  by the presence of a `COLLSCAN` rather than by an allowlist of index stage names, so no
+  version check is involved.
+
+  The keyword is a diagnostic and asserts nothing, `collection_scan` included. MongoDB
+  rightly chooses a scan on a small collection, where reading it beats an index lookup
+  plus a fetch, so an assertion that no scan happens passes against production-sized data
+  and fails against a freshly seeded test collection with nothing wrong.
+
+- `Collection Should Have Index` fails unless an index on exactly the given fields exists,
+  reading the collection's index definitions rather than a query plan, so it cannot flake:
+
+  ```robotframework
+  Collection Should Have Index    collection_name=readings    keys={"_id.deviceId": 1, "_id.date": 1}
+  ```
+
+  Asks by fields rather than by name, which `Check Index Exists` does. The name is derived
+  from the fields — `_id.deviceId_1__id.date_1` — so naming it means writing out a string
+  nobody should have to spell and that changes if the index is ever recreated slightly
+  differently; the fields are what the queries depend on. The order of the fields is
+  compared, because a compound index serves its fields left to right and the same fields
+  in the other order are a different index. Failure lists every index the collection does
+  have, with its keys.
+
+  This is the guard for an index a suite quietly depends on. Dropping it breaks nothing
+  visibly: the queries still return the right documents, by reading the whole collection
+  to do it, and the suite gets slower until something times out somewhere unrelated.
+
+- Documentation for the empty result a collection keyed by a compound `_id` produces three
+  ways, none of which errors: the automatic `_id_` index cannot serve a query on part of
+  the id, since it stores the subdocument as one opaque value; matching the whole `_id`
+  compares the stored BSON and is therefore field-order sensitive; and a date compares
+  exactly, so a `datetime` at midnight never matches a document stored with milliseconds.
+
+- `Load Document` reads a seed document from a JSON file, and `Insert Document From File`
+  reads one and inserts it in a single step. A new `document_path` import argument names
+  the directory that documents given by file name are looked up in; a path given to the
+  keyword works with or without it, so the argument only removes the repetition.
+
+  The file is read as MongoDB Extended JSON, so `$oid`, `$date`, `$numberInt` and
+  `$numberDouble` become `ObjectId`, `datetime`, `int` and `float`, and the document is
+  stored with the types MongoDB compares against rather than with text that silently
+  matches nothing. Plain JSON values keep their own types. MongoDB's update operators are
+  `$`-prefixed as well and are passed through untouched, nested values included, so a file
+  can hold `{"$set": ..., "$push": ...}` for an update as readily as a document to insert.
+
+  A file can hold two kinds of hole, written differently because they are filled from
+  different places. `${name}` is a Robot Framework variable and is replaced from the ones
+  the calling suite can see, using Robot Framework's own substitution, so a value a whole
+  suite shares is written once. `{name}` is a template placeholder and is filled from the
+  loading keyword's named arguments, so a value that differs on every call is given at the
+  call:
+
+  ```robotframework
+  ${document}    Load Document    order.json    unique_id=order-1    customerId=${oid}
+  ${document}    Load Document    order.json    &{placeholders}
+  ```
+
+  Placeholders are written quoted — `"customerId": "{customerId}"` — which keeps the
+  template valid JSON, so editors, `jq` and formatters still read it. A string that is
+  exactly one placeholder is replaced whole, its quotes included, by the value's own
+  Extended JSON form, so an ObjectId, a datetime or a number arrives as itself with no
+  `$oid` or `$date` wrapper needed; a placeholder inside a longer string, as in
+  `"REF-{unique_id}"`, is interpolated as text. Inside a string `{{` and `}}` are literal
+  braces as in `str.format`, and JSON's own braces are never touched. Either kind of hole
+  left unfilled fails the keyword, because the literal text is a perfectly insertable
+  string that would seed a document looking almost right.
+
+  Any field the file already fills can be overridden by its dotted path, list positions
+  included, as in `lines.0.quantity=3`. This is the part a suite cannot do for itself:
+  `&{dict}` expansion merges one level deep, so overriding a nested field otherwise means
+  rebuilding every level above it. Overrides written literally are read like the file's own
+  values, so a number stays a number. A path that does not exist in the document fails with
+  what the document held at that point, because a path that misses is a typo far more often
+  than it is a field meant to be added.
+
+  Placeholders and overrides are given the same way and the file decides which an argument
+  is: a name it declares as a placeholder fills that placeholder, and anything else is a
+  path. So a value that always varies becomes a hole in the template, a value that varies
+  occasionally overrides what the file already says, and a bare name that is neither fails
+  naming both.
 
 ## [1.1.0] - 2026-08-13
 
