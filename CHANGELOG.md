@@ -5,6 +5,27 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- The keyword documentation is published per version. A Documentation workflow generates
+  it with libdoc on every push to `main` and every `v*` tag and pushes it to the
+  `gh-pages` branch: `/<version>/` per release, `/dev` for the current main, and `/latest`
+  plus the bare `MongoDBLibraryKeywords.html` at the site root for the newest release, so
+  the URL the already published releases point at keeps working. A reader can now open the
+  documentation for the version they have installed rather than for whatever is newest.
+
+  `/latest` and the bare path only move when the version just published is actually the
+  newest release, so a tag published late — the released versions predate the workflow and
+  are backfilled by dispatching it with a `ref` — cannot point them at older documentation.
+
+- `MongoDBLibraryKeywords.html`, `index.html` and `.nojekyll` are no longer committed. A
+  rendered libdoc page carries its generation time, the absolute path of the machine that
+  produced it and the Robot Framework and Python versions used, so a committed copy cannot
+  be compared against a freshly generated one; generating it on publish means there is
+  nothing that can drift, and no step to forget before a release.
+
 ## [1.2.0] - 2026-08-17
 
 ### Added
