@@ -239,6 +239,19 @@ A tag released before this workflow existed cannot be dispatched directly, becau
 from `main` with the `ref` input set to the tag — `v1.0.0`, say — and it checks that tag
 out, takes `tools/` from `main`, and publishes it under its own version.
 
+## Releasing
+
+A `v*` tag is what publishes to PyPI, and `.github/workflows/release.yml` is the only
+thing that uploads — there is no manual `poetry publish`. Two guards stand between the
+tag and the upload:
+
+- The workflow compares the tag against `poetry version --short` and fails before
+  building if they disagree, so a tag pushed ahead of the version bump cannot ship.
+- The `pypi` deployment environment requires a manual approval and admits only `v*`
+  tags. The job waits on GitHub until the release is approved, which is the last point
+  at which a wrong tag can be deleted instead of yanked — PyPI does not allow reusing a
+  version number.
+
 ## Submitting Changes
 
 1. **Create a Branch**: Create a new branch for your changes.
