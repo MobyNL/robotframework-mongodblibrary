@@ -8,9 +8,10 @@
 MongoDBLibrary is a test library for [Robot Framework](https://robotframework.org/) that provides keywords for interacting with MongoDB databases.
 
 📖 **[Keyword documentation](https://mobynl.github.io/robotframework-mongodblibrary/)** —
-every keyword, its arguments and examples.
+every keyword, its arguments and examples, published per version.
 
 - [Features](#features)
+- [Documentation](#documentation)
 - [Installation](#installation)
 - [Requirements](#requirements)
 - [Importing](#importing)
@@ -40,6 +41,21 @@ every keyword, its arguments and examples.
   server chose, and the values it actually searched for
 - `Run Database Command` for everything the keywords do not wrap
 - Runs on Robot Framework 5.0 through 7.x, from one code path
+
+## Documentation
+
+The [keyword documentation](https://mobynl.github.io/robotframework-mongodblibrary/)
+describes every keyword, its arguments and examples. It is published per version, so you
+can read the documentation for the version you actually have installed rather than for
+whatever is newest:
+
+- [all versions](https://mobynl.github.io/robotframework-mongodblibrary/) — start here
+- [latest release](https://mobynl.github.io/robotframework-mongodblibrary/latest/MongoDBLibraryKeywords.html)
+- [current main, unreleased](https://mobynl.github.io/robotframework-mongodblibrary/dev/MongoDBLibraryKeywords.html)
+
+The pages are generated from the library itself when a tag or a push to main is
+published, so they cannot drift from the code they document. The releases before 1.0.0
+are not published there; the [changelog](CHANGELOG.md) covers what they were.
 
 ## Installation
 

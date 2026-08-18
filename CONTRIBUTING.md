@@ -206,24 +206,38 @@ poetry run robocop check atest  # Robot Framework
 poetry run mypy                 # types
 ```
 
-### Regenerating The Keyword Documentation
+### The Keyword Documentation
 
-`MongoDBLibraryKeywords.html` is committed, so regenerate it whenever a keyword or its
-documentation changes:
+`MongoDBLibraryKeywords.html` is not committed. `.github/workflows/docs.yml` generates it
+with libdoc and pushes it to the `gh-pages` branch, one directory per version:
+`/<version>/` for a `v*` tag, `/dev` for the current main, and `/latest` plus the bare
+`MongoDBLibraryKeywords.html` at the site root for the newest release. The bare path is
+what the metadata of the already published releases points at, so it stays served.
+
+Nothing needs regenerating by hand, and nothing can drift: a rendered libdoc page carries
+its generation time, the absolute path of the machine that produced it and the Robot
+Framework and Python versions used, so a committed copy could never be compared against a
+freshly generated one anyway. Generating it locally to look at it is still useful, and the
+result is gitignored:
 
 ```bash
 poetry run libdoc MongoDBLibrary MongoDBLibraryKeywords.html
 ```
 
-GitHub Pages serves that file from `main` at
-<https://mobynl.github.io/robotframework-mongodblibrary/>, so a merged change to it is
-published immediately. Two files at the repository root keep that working, and both need
-to stay:
+`tools/build_docs_index.py` renders the landing page listing the published versions, from
+the `versions.json` the workflow keeps on the branch. It decides which release is the
+newest, which is what keeps `/latest` from being pointed at an older version when an older
+tag is published late, so it has unit tests in `utest/test_docs_index.py` — the workflow
+runs once per release, where a mistake is only noticed after the fact.
 
-- `.nojekyll` — the generated documentation contains 175 `{{ ... }}` sequences in its
-  JavaScript, which Jekyll would read as template tags and strip. Without this file the
-  published page is quietly broken while the committed one looks fine.
-- `index.html` — a redirect, because the site root would otherwise have nothing to serve.
+The workflow writes `.nojekyll` onto the branch itself: the generated documentation
+contains 175 `{{ ... }}` sequences in its JavaScript, which Jekyll would read as template
+tags and strip, leaving a page that is quietly broken.
+
+A tag released before this workflow existed cannot be dispatched directly, because
+`workflow_dispatch` only runs a workflow that exists on the chosen ref. Run the workflow
+from `main` with the `ref` input set to the tag — `v1.0.0`, say — and it checks that tag
+out, takes `tools/` from `main`, and publishes it under its own version.
 
 ## Submitting Changes
 
