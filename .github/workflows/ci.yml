@@ -5,9 +5,9 @@ on:
     branches: [main]
   pull_request:
   schedule:
-    # Nightly, so a change at the hosted end is found within a day rather than at the
-    # next release.
-    - cron: "17 3 * * *"
+    # Weekly, so a change at the hosted end or an unpinned dependency is found before
+    # the next release, without the noise of a daily run.
+    - cron: "17 3 * * 1"
   workflow_dispatch:
 
 jobs:
