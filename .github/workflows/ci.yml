@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Weekly, so a change at the hosted end or an unpinned dependency is found before
+    # the next release, without the noise of a daily run.
+    - cron: "17 3 * * 1"
   workflow_dispatch:
 
 jobs:
