@@ -1,12 +1,5 @@
 [
   {
-    "version": "main (unreleased)",
-    "path": "dev",
-    "tags": [
-      "unreleased"
-    ]
-  },
-  {
     "version": "1.1.0",
     "path": "1.1.0",
     "tags": []
@@ -22,5 +15,12 @@
     "version": "1.0.0",
     "path": "1.0.0",
     "tags": []
+  },
+  {
+    "version": "main (unreleased)",
+    "path": "dev",
+    "tags": [
+      "unreleased"
+    ]
   }
 ]
